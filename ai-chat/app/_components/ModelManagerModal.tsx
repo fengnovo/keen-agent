@@ -11,13 +11,11 @@ import {
   Popconfirm,
   Space,
   Table,
-  Tag,
   Tooltip,
   message,
 } from 'antd';
 import type { TableProps } from 'antd';
 import {
-  CheckCircleOutlined,
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
@@ -25,7 +23,6 @@ import {
 } from '@ant-design/icons';
 
 import {
-  activateModel,
   createModel,
   deleteModel,
   listModels,
@@ -138,7 +135,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
     }
   };
 
-  /** 统一处理激活、删除等返回完整注册表的模型操作。 */
+  /** 删除成功后使用服务端返回的完整注册表同步所有模型选择器。 */
   const runModelAction = async (
     actionKey: string,
     action: () => Promise<ModelRegistry>,
@@ -168,12 +165,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
       width: 190,
       render: (name: string, model) => (
         <Space orientation='vertical' size={0}>
-          <Space size={6}>
-            <span>{name}</span>
-            {model.id === registry?.activeModelId ? (
-              <Tag color='green'>当前</Tag>
-            ) : null}
-          </Space>
+          <span>{name}</span>
           <span style={{ color: '#8c8c8c', fontSize: 12 }}>{model.id}</span>
         </Space>
       ),
@@ -203,29 +195,12 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
       title: '操作',
       key: 'actions',
       fixed: 'right',
-      width: 210,
+      width: 110,
       render: (_, model) => {
-        const isActive = model.id === registry?.activeModelId;
         const isLastModel = registry?.models.length === 1;
 
         return (
           <Space size='small'>
-            <Button
-              type='link'
-              size='small'
-              icon={<CheckCircleOutlined />}
-              disabled={isActive}
-              loading={pendingAction === `activate:${model.id}`}
-              onClick={() =>
-                void runModelAction(
-                  `activate:${model.id}`,
-                  () => activateModel(model.id),
-                  `已切换到 ${model.name}`,
-                )
-              }
-            >
-              设为当前
-            </Button>
             <Button
               type='text'
               size='small'
@@ -237,9 +212,6 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
               <span>
                 <Popconfirm
                   title={`删除模型“${model.name}”？`}
-                  description={
-                    isActive ? '删除后将自动切换到其他模型。' : undefined
-                  }
                   okText='删除'
                   cancelText='取消'
                   okButtonProps={{ danger: true }}

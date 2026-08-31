@@ -107,7 +107,7 @@ export class ConversationsService {
     return this.findOrThrow(store, id);
   }
 
-  /** 创建会话，并确认指定模型仍存在于共享模型注册表。 */
+  /** 创建会话；未指定模型时继承模型注册表记录的上次选择。 */
   async create(payload: unknown): Promise<ChatConversation> {
     const input = this.parse(createConversationSchema, payload);
     const modelRegistry = await this.modelsService.list();
@@ -133,7 +133,10 @@ export class ConversationsService {
     });
   }
 
-  /** 更新标题或模型，同时推进侧边栏排序所依赖的 updatedAt。 */
+  /**
+   * 更新标题或当前会话模型，并推进侧边栏排序所依赖的 updatedAt。
+   * 用户选择模型时只改这一条会话，同时把该模型记为未来新会话的继承值。
+   */
   async update(id: string, payload: unknown): Promise<ChatConversation> {
     const input = this.parse(updateConversationSchema, payload);
 
@@ -141,7 +144,7 @@ export class ConversationsService {
       await this.modelsService.get(input.modelId);
     }
 
-    return this.mutate((store) => {
+    const conversation = await this.mutate((store) => {
       const conversation = this.findOrThrow(store, id);
 
       if (input.title !== undefined) conversation.title = input.title;
@@ -149,6 +152,12 @@ export class ConversationsService {
       conversation.updatedAt = new Date().toISOString();
       return conversation;
     });
+
+    if (input.modelId) {
+      await this.modelsService.activate(input.modelId);
+    }
+
+    return conversation;
   }
 
   /** 删除会话；删除最后一个会话后的补建策略由前端负责。 */

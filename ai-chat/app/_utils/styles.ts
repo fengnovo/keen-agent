@@ -70,7 +70,7 @@ export const useStyle = createStyles(({ token, css }) => {
     `,
     /** 侧边栏头部样式 */
     sideHeader: css`
-      min-height: 88px;
+      min-height: 60px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -138,7 +138,6 @@ export const useStyle = createStyles(({ token, css }) => {
     /** 会话列表样式 */
     conversations: css`
       overflow-y: auto;
-      margin-top: 12px;
       padding: 0;
       flex: 1;
       .ant-conversations-list {
@@ -149,6 +148,7 @@ export const useStyle = createStyles(({ token, css }) => {
         color: ${token.colorTextLightSolid} !important;
         background: ${token.colorPrimaryActive} !important;
         border-color: ${token.colorPrimaryActive} !important;
+        margin-bottom: 0;
 
         &:hover,
         &:focus-visible {
@@ -258,7 +258,8 @@ export const useStyle = createStyles(({ token, css }) => {
     /** 输入框样式 */
     sender: css`
       width: 100%;
-      max-width: 840px;
+      max-width: 1000px;
+      margin-bottom: 10px;
 
       .ant-sender-actions-btn:not(.ant-btn-variant-text) {
         color: ${token.colorTextLightSolid} !important;
@@ -285,7 +286,7 @@ export const useStyle = createStyles(({ token, css }) => {
     `,
     /** 输入框中的当前会话模型选择器 */
     modelSelect: css`
-      width: 176px;
+      width: 170px;
 
       .ant-select-selection-item {
         color: ${token.colorTextSecondary};

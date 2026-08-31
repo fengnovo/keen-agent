@@ -105,9 +105,8 @@ const loadInitialChatData = async (): Promise<InitialChatData> => {
     return { modelRegistry, conversations: existingConversations };
   }
 
-  const conversation = await createConversation({
-    modelId: modelRegistry.activeModelId,
-  });
+  // 不传 modelId，由 Nest 统一继承上次选择，避免前端缓存过期。
+  const conversation = await createConversation();
   const { messages, ...conversationSummary } = conversation;
 
   return {
@@ -157,7 +156,7 @@ const Independent: React.FC = () => {
   const activeConversation = conversationItems.find(
     (conversation) => conversation.key === activeConversationKey,
   );
-  // 模型被删除时回退到全局当前模型，避免会话停留在一个无效模型 ID 上。
+  // 模型被删除时回退到上次选择的有效模型，避免会话停留在无效 ID 上。
   const selectedModelId = modelRegistry?.models.some(
     (model) => model.id === activeConversation?.modelId,
   )
@@ -251,12 +250,10 @@ const Independent: React.FC = () => {
     },
   });
 
-  /** 创建成功后立即插入侧边栏并切换到新会话。 */
+  /** 新会话由 Nest 继承上次主动选择的模型，不复制正在浏览的旧会话模型。 */
   const handleCreateConversation = useCallback(async () => {
     try {
-      const conversation = await createConversation({
-        modelId: selectedModelId ?? modelRegistry?.activeModelId,
-      });
+      const conversation = await createConversation();
       const nextConversation = toConversationItem(conversation);
 
       addConversation(nextConversation, 'prepend');
@@ -268,13 +265,7 @@ const Independent: React.FC = () => {
       );
       return false;
     }
-  }, [
-    addConversation,
-    messageApi,
-    modelRegistry,
-    selectedModelId,
-    setActiveConversationKey,
-  ]);
+  }, [addConversation, messageApi, setActiveConversationKey]);
 
   /** 删除当前最后一条会话时自动补建空会话，保证输入区始终有归属。 */
   const handleDeleteConversation = useCallback(
@@ -291,9 +282,8 @@ const Independent: React.FC = () => {
           if (remainingConversations.length > 0) {
             setActiveConversationKey(remainingConversations[0].key);
           } else {
-            const replacement = await createConversation({
-              modelId: modelRegistry?.activeModelId,
-            });
+            // 补建会话也遵循“继承上次选择”，与手动新建保持一致。
+            const replacement = await createConversation();
             const replacementItem = toConversationItem(replacement);
             addConversation(replacementItem, 'prepend');
             setActiveConversationKey(replacementItem.key);
@@ -312,7 +302,6 @@ const Independent: React.FC = () => {
       addConversation,
       conversationItems,
       messageApi,
-      modelRegistry,
       removeConversation,
       setActiveConversationKey,
     ],
@@ -335,7 +324,10 @@ const Independent: React.FC = () => {
     [messageApi, setConversation],
   );
 
-  /** 模型选择是会话级配置；切换后写回 Nest 以支持刷新恢复。 */
+  /**
+   * 只修改当前会话的模型；Nest 另行记住这次选择，供未来新会话继承。
+   * 其他历史会话各自持久化的 modelId 不会被改写。
+   */
   const handleModelChange = useCallback(
     async (modelId: string) => {
       if (!activeConversationKey) return;
@@ -347,6 +339,12 @@ const Independent: React.FC = () => {
         setConversation(
           activeConversationKey,
           toConversationItem(conversation),
+        );
+        // 同步服务端保存的“上次选择”，让本地回退逻辑立即使用新模型。
+        setModelRegistry((currentRegistry) =>
+          currentRegistry
+            ? { ...currentRegistry, activeModelId: modelId }
+            : currentRegistry,
         );
       } catch (error) {
         messageApi.error(

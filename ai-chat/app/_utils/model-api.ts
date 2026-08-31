@@ -14,6 +14,7 @@ export interface ModelConfig {
 
 export interface ModelRegistry {
   version: 1;
+  /** 内部记录用户上次主动选择的模型，供后续新会话继承。 */
   activeModelId: string;
   models: ModelConfig[];
 }
@@ -79,9 +80,4 @@ export const updateModel = (id: string, model: ModelConfig) =>
 export const deleteModel = (id: string) =>
   request<ModelRegistry>(`/${encodeURIComponent(id)}`, {
     method: 'DELETE',
-  });
-
-export const activateModel = (id: string) =>
-  request<ModelRegistry>(`/${encodeURIComponent(id)}/active`, {
-    method: 'PATCH',
   });

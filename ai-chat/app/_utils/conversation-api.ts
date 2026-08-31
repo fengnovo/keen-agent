@@ -83,7 +83,7 @@ export const listConversations = () => request<ConversationSummary[]>();
 export const getConversation = (id: string) =>
   request<ChatConversation>(`/${encodeURIComponent(id)}`);
 
-/** 新建会话；未指定模型时由服务端采用当前默认模型。 */
+/** 新建会话；未指定模型时由服务端继承用户上次主动选择的模型。 */
 export const createConversation = (input?: {
   title?: string;
   modelId?: string;
