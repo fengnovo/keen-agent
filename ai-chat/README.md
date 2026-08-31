@@ -20,7 +20,7 @@ Use the **模型管理** button at the bottom of the sidebar to create, read, up
 
 Chat requests, conversation history, and per-conversation model selection also use the Nest service. Conversations are restored after a page refresh instead of relying on browser-only demo data.
 
-The chat composer supports vision input through image selection, drag-and-drop, and clipboard paste. JPEG, PNG, GIF, and WebP images are accepted, with up to 3 images per request, 4 MB per image, and 6 MB total. Images are validated again by the Nest service, persisted with the conversation, and restored in message history. The selected model must provide vision support.
+The chat composer supports vision input through image selection, drag-and-drop, and clipboard paste. JPEG, PNG, GIF, and WebP images are accepted, with up to 3 images per request, 4 MB per image, and 6 MB total. Images are validated again by the Nest service, persisted with the conversation, and restored in message history. When the selected chat model cannot read images, the Nest service first uses its configured vision model (default: `qwen3.5-ocr`) and then passes the extracted visual context to the selected model for the final answer and future follow-up questions.
 
 The proxy defaults to `http://127.0.0.1:3001`. To use a different Nest service, add this to `ai-chat/.env.local`:
 

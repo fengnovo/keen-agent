@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { ModelsService } from '../models/models.service.js';
 
 const CHAT_CONVERSATIONS_VERSION = 1;
+const MAX_IMAGE_ANALYSIS_LENGTH = 20_000;
 const SUPPORTED_IMAGE_TYPES = [
   'image/jpeg',
   'image/png',
@@ -38,6 +39,7 @@ const chatMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string(),
   images: z.array(chatImageSchema).max(3).optional(),
+  imageAnalysis: z.string().max(MAX_IMAGE_ANALYSIS_LENGTH).optional(),
   reasoningContent: z.string().optional(),
   createdAt: z.string().datetime(),
 });
@@ -78,8 +80,10 @@ export type ChatImageRecord = z.infer<typeof chatImageSchema>;
 export type ChatConversation = z.infer<typeof conversationSchema>;
 type ConversationStore = z.infer<typeof conversationStoreSchema>;
 
-export interface ConversationSummary
-  extends Omit<ChatConversation, 'messages'> {
+export interface ConversationSummary extends Omit<
+  ChatConversation,
+  'messages'
+> {
   messageCount: number;
 }
 
@@ -220,6 +224,36 @@ export class ConversationsService {
     });
   }
 
+  /** 缓存视觉模型提取的图片上下文，供本轮主模型和后续追问复用。 */
+  setImageAnalysis(
+    id: string,
+    messageId: string,
+    imageAnalysis: string,
+  ): Promise<ChatConversation> {
+    return this.mutate((store) => {
+      const conversation = this.findOrThrow(store, id);
+      const message = conversation.messages.find(
+        (item) => item.id === messageId,
+      );
+
+      if (!message || message.role !== 'user' || !message.images?.length) {
+        throw new BadRequestException('找不到需要写入图片解析结果的用户消息');
+      }
+
+      const normalizedAnalysis = imageAnalysis
+        .trim()
+        .slice(0, MAX_IMAGE_ANALYSIS_LENGTH);
+
+      if (!normalizedAnalysis) {
+        throw new BadRequestException('图片解析结果不能为空');
+      }
+
+      message.imageAnalysis = normalizedAnalysis;
+      conversation.updatedAt = new Date().toISOString();
+      return conversation;
+    });
+  }
+
   /** 模型流正常结束后，将正式回答和思考内容一起原子落盘。 */
   appendAssistantMessage(
     id: string,
@@ -308,9 +342,7 @@ export class ConversationsService {
   /**
    * 把“读取 → 修改 → 保存”作为一个串行事务执行；失败不会阻塞后续写入。
    */
-  private mutate<T>(
-    operation: (store: ConversationStore) => T,
-  ): Promise<T> {
+  private mutate<T>(operation: (store: ConversationStore) => T): Promise<T> {
     const result = this.mutationQueue.then(async () => {
       const store = await this.loadStore();
       const operationResult = operation(store);

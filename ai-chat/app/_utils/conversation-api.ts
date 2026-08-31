@@ -11,6 +11,8 @@ export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
   images?: ChatImage[];
+  /** 服务端缓存的视觉模型结果；聊天界面无需直接展示。 */
+  imageAnalysis?: string;
   reasoningContent?: string;
   createdAt: string;
 }
