@@ -12,6 +12,7 @@ export const DESIGN_THEME_COLORS = {
   background: '#ffffff',
   surface: '#f5f5f5',
   surfaceStrong: '#ebebeb',
+  surfaceActive: '#dedede',
   border: '#d9d9d9',
   borderSecondary: '#eeeeee',
   text: '#141414',
@@ -38,6 +39,10 @@ export const designTheme: ThemeConfig = {
     colorBgElevated: DESIGN_THEME_COLORS.background,
     colorBgLayout: DESIGN_THEME_COLORS.surface,
     colorFillSecondary: DESIGN_THEME_COLORS.surfaceStrong,
+    // 黑色主色会让 Ant Design 自动生成深色选中背景，这里固定为浅灰交互色。
+    controlItemBgHover: DESIGN_THEME_COLORS.surface,
+    controlItemBgActive: DESIGN_THEME_COLORS.surfaceStrong,
+    controlItemBgActiveHover: DESIGN_THEME_COLORS.surfaceActive,
     colorBorder: DESIGN_THEME_COLORS.border,
     colorBorderSecondary: DESIGN_THEME_COLORS.borderSecondary,
     borderRadius: 10,
@@ -49,6 +54,14 @@ export const designTheme: ThemeConfig = {
       defaultHoverBorderColor: DESIGN_THEME_COLORS.primary,
       defaultActiveColor: DESIGN_THEME_COLORS.primaryActive,
       defaultActiveBorderColor: DESIGN_THEME_COLORS.primaryActive,
+    },
+    Select: {
+      // 保证模型菜单始终是浅底深字，并保留清晰但不过重的键盘焦点边框。
+      optionSelectedColor: DESIGN_THEME_COLORS.text,
+      optionSelectedBg: DESIGN_THEME_COLORS.surfaceStrong,
+      optionActiveBg: DESIGN_THEME_COLORS.surface,
+      activeBorderColor: DESIGN_THEME_COLORS.border,
+      activeOutlineColor: 'transparent',
     },
   },
 };

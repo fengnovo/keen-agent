@@ -18,6 +18,8 @@ This project uses the self-hosted [`geist`](https://vercel.com/font) package, so
 
 Use the **模型管理** button at the bottom of the sidebar to create, read, update, delete, or activate AI Agent model configurations. The UI calls the Nest service through `/api/ai-server/*`.
 
+Chat requests, conversation history, and per-conversation model selection also use the Nest service. Conversations are restored after a page refresh instead of relying on browser-only demo data.
+
 The proxy defaults to `http://127.0.0.1:3001`. To use a different Nest service, add this to `ai-chat/.env.local`:
 
 ```bash

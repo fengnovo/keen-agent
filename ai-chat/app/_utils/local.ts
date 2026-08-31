@@ -52,6 +52,8 @@ export const texts = {
   resizeSidebar: '拖动调整侧栏宽度，双击恢复默认宽度',
   startNewConversation: '新开对话',
   modelManagement: '模型管理',
+  selectModel: '选择模型',
+  earlier: '更早',
 
   // Welcome
   welcome: '欢迎使用 Keen AI',

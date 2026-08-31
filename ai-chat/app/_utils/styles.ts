@@ -170,7 +170,8 @@ export const useStyle = createStyles(({ token, css }) => {
       .ant-btn:hover,
       .ant-btn:focus-visible {
         color: ${token.colorPrimaryActive} !important;
-        background: ${token.colorPrimaryBg} !important;
+        /* 纯黑主色派生出的 colorPrimaryBg 过深，入口按钮统一使用浅灰反馈。 */
+        background: ${token.colorFillSecondary} !important;
       }
 
       @media (max-width: 767px) {
@@ -280,6 +281,19 @@ export const useStyle = createStyles(({ token, css }) => {
           border-color: ${token.colorPrimaryActive} !important;
           opacity: 1;
         }
+      }
+    `,
+    /** 输入框中的当前会话模型选择器 */
+    modelSelect: css`
+      width: 176px;
+
+      .ant-select-selection-item {
+        color: ${token.colorTextSecondary};
+        font-size: ${token.fontSizeSM}px;
+      }
+
+      @media (max-width: 767px) {
+        width: 116px;
       }
     `,
     /** 语音按钮样式 */

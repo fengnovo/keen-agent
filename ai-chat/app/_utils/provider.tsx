@@ -22,7 +22,8 @@ import type {
   XRequestOptions,
 } from '@ant-design/x-sdk';
 import { ChatMessage } from './types';
-import { HISTORY_MESSAGES, THOUGHT_CHAIN_CONFIG } from './config';
+import { THOUGHT_CHAIN_CONFIG } from './config';
+import { getConversation } from './conversation-api';
 import { ThinkComponent } from '../_components/ThinkComponent';
 import { MarkdownCode } from '../_components/MarkdownCode';
 import { markdownThemeStyle } from './theme';
@@ -31,7 +32,18 @@ import { markdownThemeStyle } from './theme';
  * Provider 缓存
  * 每个会话使用独立的 Provider 实例
  */
-const providerCaches = new Map<string, DeepSeekChatProvider>();
+/** Nest 聊天接口在标准模型参数之外必须知道消息所属会话。 */
+export interface ChatRequestParams extends XModelParams {
+  conversationId: string;
+}
+
+/**
+ * Provider 内部保存流请求状态，必须按会话和模型隔离；切换回来时可以安全复用。
+ */
+const providerCaches = new Map<
+  string,
+  DeepSeekChatProvider<ChatMessage, ChatRequestParams, ModelStreamOutput>
+>();
 
 /**
  * 仅允许用于思考过程的自定义标签以原始 HTML 形式进入渲染器。
@@ -59,7 +71,8 @@ const markdownConfig: NonNullable<XMarkdownProps['config']> = {
   },
 };
 
-type ModelStreamOutput = Partial<Record<SSEFields, XModelResponse>>;
+/** DeepSeekChatProvider 所需的 OpenAI 兼容 SSE 字段集合。 */
+export type ModelStreamOutput = Partial<Record<SSEFields, XModelResponse>>;
 
 /**
  * 只发送给模型、不写入本地消息列表的格式约束。
@@ -78,14 +91,18 @@ const MARKDOWN_SYSTEM_MESSAGE: XModelMessage = {
  * 在真正发出的请求中注入 Markdown 格式要求，同时避免把 system 消息显示在聊天列表里。
  */
 class MarkdownDeepSeekChatProvider extends DeepSeekChatProvider<
-  XModelMessage,
-  XModelParams,
+  ChatMessage,
+  ChatRequestParams,
   ModelStreamOutput
 > {
   override transformParams(
-    requestParams: Partial<XModelParams>,
-    options: XRequestOptions<XModelParams, ModelStreamOutput, XModelMessage>,
-  ): XModelParams {
+    requestParams: Partial<ChatRequestParams>,
+    options: XRequestOptions<
+      ChatRequestParams,
+      ModelStreamOutput,
+      ChatMessage
+    >,
+  ): ChatRequestParams {
     const params = super.transformParams(requestParams, options);
 
     return {
@@ -99,30 +116,45 @@ class MarkdownDeepSeekChatProvider extends DeepSeekChatProvider<
  * Provider 工厂函数
  * 为每个会话创建或获取 Provider 实例
  * @param conversationKey 会话标识
+ * @param modelId 当前会话选中的模型 ID
+ * @param onSettled 请求结束后刷新服务端会话摘要
  * @returns DeepSeekChatProvider 实例
  */
-export const providerFactory = (conversationKey: string) => {
-  if (!providerCaches.get(conversationKey)) {
+export const providerFactory = (
+  conversationKey: string,
+  modelId: string,
+  onSettled: () => void,
+) => {
+  // 同一会话切换模型时创建新实例，防止缓存的默认请求参数仍指向旧模型。
+  const cacheKey = `${conversationKey}:${modelId}`;
+
+  if (!providerCaches.get(cacheKey)) {
     providerCaches.set(
-      conversationKey,
+      cacheKey,
       new MarkdownDeepSeekChatProvider({
         request: XRequest<
-          XModelParams,
-          ModelStreamOutput
-        >('https://api.x.ant.design/api/big_model_glm-4.5-flash', {
+          ChatRequestParams,
+          ModelStreamOutput,
+          ChatMessage
+        >('/api/ai-server/chat/completions', {
           manual: true,
+          timeout: 65_000,
+          streamTimeout: 65_000,
           params: {
             stream: true,
-            // thinking: {
-            //   type: 'disabled',
-            // },
-            model: 'glm-4.5-flash',
+            model: modelId,
+            conversationId: conversationKey,
+          },
+          callbacks: {
+            // 成功和失败都可能已经写入用户消息，因此两种结果都刷新会话标题。
+            onSuccess: onSettled,
+            onError: onSettled,
           },
         }),
       }),
     );
   }
-  return providerCaches.get(conversationKey);
+  return providerCaches.get(cacheKey);
 };
 
 /**
@@ -131,10 +163,31 @@ export const providerFactory = (conversationKey: string) => {
  * @param conversationKey 会话标识
  * @returns 历史消息数组
  */
-export const historyMessageFactory = (
-  conversationKey: string,
-): DefaultMessageInfo<ChatMessage>[] => {
-  return HISTORY_MESSAGES[conversationKey] || [];
+export const historyMessageFactory = async ({
+  conversationKey,
+}: {
+  conversationKey?: string;
+}): Promise<DefaultMessageInfo<ChatMessage>[]> => {
+  if (!conversationKey) return [];
+
+  const conversation = await getConversation(conversationKey);
+
+  return conversation.messages.map((message) => {
+    // 思考内容重新包装成现有 Markdown 自定义标签，保持刷新前后的展示一致。
+    const content =
+      message.role === 'assistant' && message.reasoningContent
+        ? `<think status="done">\n\n${message.reasoningContent}\n\n</think>\n\n${message.content}`
+        : message.content;
+
+    return {
+      id: message.id,
+      status: 'success',
+      message: {
+        role: message.role,
+        content,
+      },
+    };
+  });
 };
 
 /**

@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { Button, Flex } from 'antd';
+import { Button, Flex, Select, Space } from 'antd';
 import { PaperClipOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { Sender, Attachments } from '@ant-design/x';
 import type { GetProp } from 'antd';
@@ -25,6 +25,16 @@ interface ChatSenderProps {
   isRequesting: boolean;
   /** 取消请求回调 */
   abort: () => void;
+  /** 当前可选模型 */
+  modelOptions: Array<{ label: string; value: string }>;
+  /** 当前会话模型 */
+  selectedModelId?: string;
+  /** 修改当前会话模型 */
+  onModelChange: (modelId: string) => void;
+  /** 模型列表加载状态 */
+  modelsLoading?: boolean;
+  /** 会话初始化状态 */
+  disabled?: boolean;
 }
 
 /**
@@ -37,6 +47,11 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
   onSubmit,
   isRequesting,
   abort,
+  modelOptions,
+  selectedModelId,
+  onModelChange,
+  modelsLoading,
+  disabled,
 }) => {
   const { styles } = useStyle();
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
@@ -96,7 +111,26 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
             onClick={() => setAttachmentsOpen(!attachmentsOpen)}
           />
         }
+        suffix={(originalNode) => (
+          <Space size={4}>
+            {/* 模型属于当前会话；请求期间锁定，避免一次流中途切换模型。 */}
+            <Select
+              aria-label={texts.selectModel}
+              className={styles.modelSelect}
+              variant='borderless'
+              value={selectedModelId}
+              options={modelOptions}
+              loading={modelsLoading}
+              disabled={disabled || isRequesting || modelOptions.length === 0}
+              optionFilterProp='label'
+              popupMatchSelectWidth={false}
+              onChange={onModelChange}
+            />
+            {originalNode}
+          </Space>
+        )}
         loading={isRequesting}
+        disabled={disabled}
         className={styles.sender}
         allowSpeech
         placeholder={texts.askOrInputUseSkills}

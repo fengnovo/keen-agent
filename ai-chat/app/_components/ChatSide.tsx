@@ -6,7 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
-import { Button } from 'antd';
+import { Button, Input, Modal } from 'antd';
 import { Conversations } from '@ant-design/x';
 import type { ConversationData } from '@ant-design/x-sdk';
 import {
@@ -17,9 +17,9 @@ import {
   PlusOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
-import dayjs from 'dayjs';
 import { useStyle } from '../_utils/styles';
 import { texts } from '../_utils/local';
+import type { ModelRegistry } from '../_utils/model-api';
 
 const ModelManagerModal = dynamic(
   () =>
@@ -47,12 +47,14 @@ interface ChatSideProps {
   activeConversationKey: string;
   /** 设置活动会话 */
   setActiveConversationKey: (key: string) => void;
-  /** 添加会话 */
-  addConversation: (conversation: ConversationData) => boolean;
-  /** 设置会话列表 */
-  setConversations: (conversations: ConversationData[]) => boolean;
-  /** 当前消息数量 */
-  messagesLength: number;
+  /** 新建服务端会话 */
+  onCreateConversation: () => Promise<boolean>;
+  /** 删除服务端会话 */
+  onDeleteConversation: (key: string) => Promise<boolean>;
+  /** 重命名服务端会话 */
+  onRenameConversation: (key: string, title: string) => Promise<boolean>;
+  /** 模型注册表发生变化 */
+  onModelRegistryChange: (registry: ModelRegistry) => void;
 }
 
 /**
@@ -63,9 +65,10 @@ export const ChatSide: React.FC<ChatSideProps> = ({
   conversations,
   activeConversationKey,
   setActiveConversationKey,
-  addConversation,
-  setConversations,
-  messagesLength,
+  onCreateConversation,
+  onDeleteConversation,
+  onRenameConversation,
+  onModelRegistryChange,
 }) => {
   const { styles } = useStyle();
   const [sideWidth, setSideWidth] = useState(DEFAULT_SIDE_WIDTH);
@@ -76,8 +79,14 @@ export const ChatSide: React.FC<ChatSideProps> = ({
   );
   const [resizing, setResizing] = useState(false);
   const [modelManagerOpen, setModelManagerOpen] = useState(false);
+  const [conversationOperation, setConversationOperation] = useState('');
+  const [renamingConversation, setRenamingConversation] =
+    useState<ConversationData>();
+  const [renameValue, setRenameValue] = useState('');
+  /** 保存拖动开始位置，移动过程中无需因高频变化触发额外状态更新。 */
   const resizeStart = useRef({ pointerX: 0, width: DEFAULT_SIDE_WIDTH });
 
+  /** 仅在拖动期间注册全局监听，结束或卸载时恢复页面交互样式。 */
   useEffect(() => {
     if (!resizing) return;
 
@@ -108,6 +117,7 @@ export const ChatSide: React.FC<ChatSideProps> = ({
     };
   }, [resizing]);
 
+  /** 进入窄屏时自动收起侧边栏，避免遮住聊天内容。 */
   useEffect(() => {
     const mobileMedia = window.matchMedia(MOBILE_MEDIA_QUERY);
     const handleViewportChange = (event: MediaQueryListEvent) => {
@@ -126,20 +136,50 @@ export const ChatSide: React.FC<ChatSideProps> = ({
     }
   };
 
-  const handleCreateConversation = () => {
-    if (messagesLength === 0) {
-      collapseOnMobile();
-      return;
+  /** 等待 Nest 创建成功后再收起移动端侧栏。 */
+  const handleCreateConversation = async () => {
+    setConversationOperation('create');
+    try {
+      if (await onCreateConversation()) collapseOnMobile();
+    } finally {
+      setConversationOperation('');
     }
+  };
 
-    const now = dayjs().valueOf().toString();
-    addConversation({
-      key: now,
-      label: `${texts.newConversation} ${conversations.length + 1}`,
-      group: texts.today,
-    });
-    setActiveConversationKey(now);
-    collapseOnMobile();
+  /** 用操作 key 只锁定当前删除项，其他会话仍可浏览。 */
+  const handleDeleteConversation = async (key: string) => {
+    setConversationOperation(`delete:${key}`);
+    try {
+      await onDeleteConversation(key);
+    } finally {
+      setConversationOperation('');
+    }
+  };
+
+  /** 菜单项标签含“当前会话”前缀时，仍从原始列表取真实标题。 */
+  const openRenameConversation = (conversation: ConversationData) => {
+    const originalConversation = conversations.find(
+      (item) => item.key === conversation.key,
+    );
+
+    setRenamingConversation(originalConversation ?? conversation);
+    setRenameValue(
+      String(originalConversation?.label ?? conversation.label ?? ''),
+    );
+  };
+
+  const handleRenameConversation = async () => {
+    const title = renameValue.trim();
+    if (!renamingConversation || !title) return;
+
+    setConversationOperation(`rename:${renamingConversation.key}`);
+    try {
+      if (await onRenameConversation(renamingConversation.key, title)) {
+        setRenamingConversation(undefined);
+      }
+    } finally {
+      setConversationOperation('');
+    }
   };
 
   const handleResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -151,6 +191,7 @@ export const ChatSide: React.FC<ChatSideProps> = ({
     setResizing(true);
   };
 
+  /** 支持方向键和 Home/End 调整侧栏，保证拖动条可由键盘操作。 */
   const handleResizeKeyDown = (
     event: React.KeyboardEvent<HTMLDivElement>,
   ) => {
@@ -219,7 +260,8 @@ export const ChatSide: React.FC<ChatSideProps> = ({
         size='large'
         className={styles.mobileNewConversation}
         icon={<PlusOutlined />}
-        onClick={handleCreateConversation}
+        loading={conversationOperation === 'create'}
+        onClick={() => void handleCreateConversation()}
         title={texts.startNewConversation}
         aria-label={texts.startNewConversation}
       />
@@ -228,7 +270,8 @@ export const ChatSide: React.FC<ChatSideProps> = ({
       {!collapsed && (
         <Conversations
           creation={{
-            onClick: handleCreateConversation,
+            disabled: conversationOperation === 'create',
+            onClick: () => void handleCreateConversation(),
           }}
           items={conversations.map(({ key, label, ...other }) => ({
             key,
@@ -252,22 +295,16 @@ export const ChatSide: React.FC<ChatSideProps> = ({
                 label: texts.rename,
                 key: 'rename',
                 icon: <EditOutlined />,
+                onClick: () => openRenameConversation(conversation),
               },
               {
                 label: texts.delete,
                 key: 'delete',
                 icon: <DeleteOutlined />,
                 danger: true,
-                onClick: () => {
-                  const newList = conversations.filter(
-                    (item) => item.key !== conversation.key,
-                  );
-                  const newKey = newList?.[0]?.key;
-                  setConversations(newList);
-                  if (conversation.key === activeConversationKey) {
-                    setActiveConversationKey(newKey);
-                  }
-                },
+                disabled:
+                  conversationOperation === `delete:${conversation.key}`,
+                onClick: () => void handleDeleteConversation(conversation.key),
               },
             ],
           })}
@@ -293,8 +330,28 @@ export const ChatSide: React.FC<ChatSideProps> = ({
         <ModelManagerModal
           open
           onClose={() => setModelManagerOpen(false)}
+          onRegistryChange={onModelRegistryChange}
         />
       ) : null}
+
+      <Modal
+        open={Boolean(renamingConversation)}
+        title='重命名会话'
+        okText='保存'
+        cancelText='取消'
+        confirmLoading={conversationOperation.startsWith('rename:')}
+        okButtonProps={{ disabled: !renameValue.trim() }}
+        onOk={() => void handleRenameConversation()}
+        onCancel={() => setRenamingConversation(undefined)}
+      >
+        <Input
+          value={renameValue}
+          maxLength={60}
+          autoFocus
+          onChange={(event) => setRenameValue(event.target.value)}
+          onPressEnter={() => void handleRenameConversation()}
+        />
+      </Modal>
 
       {/* 侧栏宽度调整条 */}
       {!collapsed && (

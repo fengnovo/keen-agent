@@ -48,8 +48,12 @@ const DEFAULT_MODEL: ModelConfig = {
 };
 
 interface ModelManagerModalProps {
+  /** 是否显示模型管理弹窗。 */
   open: boolean;
+  /** 关闭弹窗。 */
   onClose: () => void;
+  /** 模型 CRUD 后把最新注册表同步给聊天页和模型选择器。 */
+  onRegistryChange?: (registry: ModelRegistry) => void;
 }
 
 const normalizeModel = (values: ModelConfig): ModelConfig => ({
@@ -66,6 +70,7 @@ const normalizeModel = (values: ModelConfig): ModelConfig => ({
 export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
   open,
   onClose,
+  onRegistryChange,
 }) => {
   const [messageApi, contextHolder] = message.useMessage();
   const [form] = Form.useForm<ModelConfig>();
@@ -77,12 +82,15 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelConfig>();
 
+  /** 读取共享模型注册表，并同步更新聊天页的下拉选项。 */
   const loadRegistry = useCallback(async () => {
     setLoading(true);
     setLoadError('');
 
     try {
-      setRegistry(await listModels());
+      const nextRegistry = await listModels();
+      setRegistry(nextRegistry);
+      onRegistryChange?.(nextRegistry);
     } catch (error) {
       setLoadError(
         error instanceof Error ? error.message : '无法读取模型配置',
@@ -90,7 +98,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onRegistryChange]);
 
   const openCreateEditor = () => {
     setEditingModel(undefined);
@@ -106,6 +114,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
     setEditorOpen(true);
   };
 
+  /** 新建和编辑共用同一表单，保存成功后以服务端返回值为准。 */
   const submitModel = async (values: ModelConfig) => {
     setSaving(true);
 
@@ -116,6 +125,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
         : await createModel(model);
 
       setRegistry(nextRegistry);
+      onRegistryChange?.(nextRegistry);
       setLoadError('');
       setEditorOpen(false);
       messageApi.success(editingModel ? '模型已更新' : '模型已创建');
@@ -128,6 +138,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
     }
   };
 
+  /** 统一处理激活、删除等返回完整注册表的模型操作。 */
   const runModelAction = async (
     actionKey: string,
     action: () => Promise<ModelRegistry>,
@@ -136,7 +147,9 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
     setPendingAction(actionKey);
 
     try {
-      setRegistry(await action());
+      const nextRegistry = await action();
+      setRegistry(nextRegistry);
+      onRegistryChange?.(nextRegistry);
       setLoadError('');
       messageApi.success(successMessage);
     } catch (error) {

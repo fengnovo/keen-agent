@@ -1,6 +1,6 @@
 # Keen Agent AI Server
 
-Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent 共用同一份模型配置。
+Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent 共用同一份模型配置。Web 聊天会话保存在 `.keen-agent/chat-conversations.json`。
 
 默认地址为 `http://127.0.0.1:3001/api`，可使用以下环境变量覆盖：
 
@@ -8,6 +8,7 @@ Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent �
 - `AI_SERVER_HOST`：监听地址，默认 `127.0.0.1`
 - `AI_CHAT_ORIGIN`：允许跨域访问的前端来源，多个来源以逗号分隔
 - `MODEL_CONFIG_PATH`：模型配置文件路径，主要用于测试或自定义部署
+- `CHAT_CONVERSATIONS_PATH`：Web 会话文件路径，主要用于测试或自定义部署
 
 ## API
 
@@ -17,4 +18,10 @@ Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent �
 - `PUT /api/models/:id`
 - `DELETE /api/models/:id`
 - `PATCH /api/models/:id/active`
+- `GET /api/conversations`
+- `GET /api/conversations/:id`
+- `POST /api/conversations`
+- `PATCH /api/conversations/:id`
+- `DELETE /api/conversations/:id`
+- `POST /api/chat/completions`（OpenAI 兼容 SSE）
 - `GET /api/health`

@@ -20,6 +20,7 @@
   "packageManager": "pnpm@11.24.0",
   "type": "module",
   "exports": {
+    "./agent": "./src/agent.ts",
     "./model-config": "./src/model-config.ts"
   },
   "dependencies": {

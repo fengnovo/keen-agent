@@ -1,132 +1,407 @@
 /**
  * 独立聊天页面组件
- * 整合侧边栏、聊天列表、输入框等子组件
+ * 整合服务端会话、模型选择、聊天列表和输入框。
  */
 
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { XProvider } from '@ant-design/x';
 import { message } from 'antd';
-import { useXChat, useXConversations } from '@ant-design/x-sdk';
-import { BubbleListRef } from '@ant-design/x/es/bubble';
+import {
+  useXChat,
+  useXConversations,
+  type ConversationData,
+} from '@ant-design/x-sdk';
+import type { BubbleListRef } from '@ant-design/x/es/bubble';
+import dayjs from 'dayjs';
 import '@ant-design/x-markdown/themes/light.css';
 
-import { useStyle } from './_utils/styles';
-import { ChatContext, ChatMessage } from './_utils/types';
-import { DEFAULT_CONVERSATIONS_ITEMS } from './_utils/config';
-import { providerFactory, historyMessageFactory } from './_utils/provider';
-import locale, { texts } from './_utils/local';
-import { designTheme } from './_utils/theme';
-import { ChatSide } from './_components/ChatSide';
 import { ChatList } from './_components/ChatList';
 import { ChatSender } from './_components/ChatSender';
+import { ChatSide } from './_components/ChatSide';
+import {
+  createConversation,
+  deleteConversation,
+  listConversations,
+  updateConversation,
+  type ChatConversation,
+  type ConversationSummary,
+} from './_utils/conversation-api';
+import locale, { texts } from './_utils/local';
+import { listModels, type ModelRegistry } from './_utils/model-api';
+import {
+  historyMessageFactory,
+  providerFactory,
+  type ChatRequestParams,
+  type ModelStreamOutput,
+} from './_utils/provider';
+import { useStyle } from './_utils/styles';
+import { designTheme } from './_utils/theme';
+import { ChatContext, type ChatMessage } from './_utils/types';
+
+/** Ant Design 会话项附带服务端元数据，便于切换会话和模型时直接定位。 */
+interface ConversationListItem extends ConversationData {
+  key: string;
+  label: string;
+  group: string;
+  modelId: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+/** 首屏并行请求模型注册表和会话摘要后的组合结果。 */
+interface InitialChatData {
+  conversations: ConversationSummary[];
+  modelRegistry: ModelRegistry;
+}
+
+/** 按最后更新时间生成侧边栏分组，不把易变化的分组信息写入磁盘。 */
+const getConversationGroup = (updatedAt: string) => {
+  const updatedDate = dayjs(updatedAt);
+
+  if (updatedDate.isSame(dayjs(), 'day')) return texts.today;
+  if (updatedDate.isSame(dayjs().subtract(1, 'day'), 'day')) {
+    return texts.yesterday;
+  }
+  return texts.earlier;
+};
+
+/** 将 Nest 返回的详情或摘要统一转换成 Ant Design 会话项。 */
+const toConversationItem = (
+  conversation:
+    | ConversationSummary
+    | (ChatConversation & { messageCount?: number }),
+): ConversationListItem => ({
+  key: conversation.id,
+  label: conversation.title,
+  group: getConversationGroup(conversation.updatedAt),
+  modelId: conversation.modelId,
+  createdAt: conversation.createdAt,
+  updatedAt: conversation.updatedAt,
+  messageCount:
+    'messages' in conversation
+      ? conversation.messages.length
+      : conversation.messageCount,
+});
 
 /**
- * Markdown 主题 hook
- * 返回 Markdown 主题类名
+ * 同时加载模型和会话以消除首屏请求瀑布；首次使用时自动创建一个空会话。
  */
+const loadInitialChatData = async (): Promise<InitialChatData> => {
+  const [modelRegistry, existingConversations] = await Promise.all([
+    listModels(),
+    listConversations(),
+  ]);
+
+  if (existingConversations.length > 0) {
+    return { modelRegistry, conversations: existingConversations };
+  }
+
+  const conversation = await createConversation({
+    modelId: modelRegistry.activeModelId,
+  });
+  const { messages, ...conversationSummary } = conversation;
+
+  return {
+    modelRegistry,
+    conversations: [
+      {
+        ...conversationSummary,
+        messageCount: messages.length,
+      },
+    ],
+  };
+};
+
+/** Markdown 主题 hook。 */
 function useMarkdownTheme(): [string] {
   return ['x-markdown-light x-markdown-theme'];
 }
 
-/**
- * 独立聊天页面
- * 包含会话管理、消息发送、AI 回复等功能
- */
 const Independent: React.FC = () => {
   const { styles } = useStyle();
+  const [messageApi, contextHolder] = message.useMessage();
+  const [className] = useMarkdownTheme();
+  const [inputValue, setInputValue] = useState('');
+  const [modelRegistry, setModelRegistry] = useState<ModelRegistry>();
+  const [initializing, setInitializing] = useState(true);
+  // 复用初始化 Promise，避免 React 开发模式重复执行 Effect 时创建两条默认会话。
+  const initializationRef = useRef<Promise<InitialChatData> | undefined>(
+    undefined,
+  );
+  const listRef = useRef<BubbleListRef>(null);
 
-  // ==================== State ====================
-
-  /** 会话管理 */
   const {
     conversations,
     activeConversationKey,
     setActiveConversationKey,
     addConversation,
+    removeConversation,
+    setConversation,
     setConversations,
   } = useXConversations({
-    defaultConversations: DEFAULT_CONVERSATIONS_ITEMS,
-    defaultActiveConversationKey: DEFAULT_CONVERSATIONS_ITEMS[0].key,
+    defaultConversations: [],
+    defaultActiveConversationKey: '',
   });
 
-  /** Markdown 主题类名 */
-  const [className] = useMarkdownTheme();
+  /** useXConversations 保留了扩展字段，但其公开类型只声明 ConversationData。 */
+  const conversationItems = conversations as ConversationListItem[];
+  const activeConversation = conversationItems.find(
+    (conversation) => conversation.key === activeConversationKey,
+  );
+  // 模型被删除时回退到全局当前模型，避免会话停留在一个无效模型 ID 上。
+  const selectedModelId = modelRegistry?.models.some(
+    (model) => model.id === activeConversation?.modelId,
+  )
+    ? activeConversation?.modelId
+    : modelRegistry?.activeModelId;
 
-  /** 消息提示 */
-  const [, contextHolder] = message.useMessage();
+  /** 首次挂载时从 Nest 恢复模型与会话，而不是使用前端演示数据。 */
+  useEffect(() => {
+    let cancelled = false;
 
-  /** 输入框值 */
-  const [inputValue, setInputValue] = useState('');
+    initializationRef.current ??= loadInitialChatData();
+    void initializationRef.current
+      .then((data) => {
+        if (cancelled) return;
 
-  /** 消息列表 ref */
-  const listRef = useRef<BubbleListRef>(null);
-
-  // ==================== Runtime ====================
-
-  /** 聊天核心逻辑 */
-  const { onRequest, messages, isRequesting, abort, onReload, setMessage } =
-    useXChat<ChatMessage>({
-      /** 每个会话使用独立的 Provider */
-      provider: providerFactory(activeConversationKey),
-      conversationKey: activeConversationKey,
-      defaultMessages: historyMessageFactory(activeConversationKey),
-      /** 请求占位符 */
-      requestPlaceholder: () => {
-        return {
-          content: texts.noData,
-          role: 'assistant',
-        };
-      },
-      /** 请求失败回调 */
-      requestFallback: (_, { error, errorInfo, messageInfo }) => {
-        if (error.name === 'AbortError') {
-          return {
-            content: messageInfo?.message?.content || texts.requestAborted,
-            role: 'assistant',
-          };
+        const nextConversations = data.conversations.map(toConversationItem);
+        setModelRegistry(data.modelRegistry);
+        setConversations(nextConversations);
+        setActiveConversationKey(nextConversations[0]?.key ?? '');
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          messageApi.error(
+            error instanceof Error ? error.message : '聊天服务初始化失败',
+          );
         }
+      })
+      .finally(() => {
+        if (!cancelled) setInitializing(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messageApi, setActiveConversationKey, setConversations]);
+
+  /** 聊天结束后刷新摘要，使自动标题、更新时间和排序与服务端保持一致。 */
+  const refreshConversations = useCallback(async () => {
+    try {
+      const nextConversations = await listConversations();
+      setConversations(nextConversations.map(toConversationItem));
+    } catch (error) {
+      messageApi.warning(
+        error instanceof Error ? error.message : '无法刷新会话列表',
+      );
+    }
+  }, [messageApi, setConversations]);
+
+  /** 每个“会话 + 模型”组合使用独立 Provider，避免请求参数在会话间串用。 */
+  const provider = useMemo(() => {
+    if (!activeConversationKey || !selectedModelId) return undefined;
+
+    return providerFactory(activeConversationKey, selectedModelId, () => {
+      void refreshConversations();
+    });
+  }, [activeConversationKey, refreshConversations, selectedModelId]);
+
+  /** useXChat 负责前端流状态，历史消息和实际模型请求都来自 Nest。 */
+  const {
+    onRequest,
+    messages,
+    isRequesting,
+    isDefaultMessagesRequesting,
+    abort,
+    onReload,
+    setMessage,
+  } = useXChat<
+    ChatMessage,
+    ChatMessage,
+    ChatRequestParams,
+    ModelStreamOutput
+  >({
+    provider,
+    conversationKey: activeConversationKey,
+    defaultMessages: historyMessageFactory,
+    requestPlaceholder: () => ({
+      content: texts.noData,
+      role: 'assistant',
+    }),
+    requestFallback: (_, { error, errorInfo, messageInfo }) => {
+      if (error.name === 'AbortError') {
         return {
-          content: errorInfo?.error?.message || texts.requestFailed,
+          content: messageInfo?.message?.content || texts.requestAborted,
           role: 'assistant',
         };
-      },
-    });
+      }
+      return {
+        content: errorInfo?.error?.message || texts.requestFailed,
+        role: 'assistant',
+      };
+    },
+  });
 
-  // ==================== Event ====================
+  /** 创建成功后立即插入侧边栏并切换到新会话。 */
+  const handleCreateConversation = useCallback(async () => {
+    try {
+      const conversation = await createConversation({
+        modelId: selectedModelId ?? modelRegistry?.activeModelId,
+      });
+      const nextConversation = toConversationItem(conversation);
 
-  /**
-   * 提交消息
-   * @param val 用户输入内容
-   */
-  const onSubmit = (val: string) => {
-    if (!val) return;
+      addConversation(nextConversation, 'prepend');
+      setActiveConversationKey(nextConversation.key);
+      return true;
+    } catch (error) {
+      messageApi.error(
+        error instanceof Error ? error.message : '新建会话失败',
+      );
+      return false;
+    }
+  }, [
+    addConversation,
+    messageApi,
+    modelRegistry,
+    selectedModelId,
+    setActiveConversationKey,
+  ]);
+
+  /** 删除当前最后一条会话时自动补建空会话，保证输入区始终有归属。 */
+  const handleDeleteConversation = useCallback(
+    async (key: string) => {
+      try {
+        await deleteConversation(key);
+        const remainingConversations = conversationItems.filter(
+          (conversation) => conversation.key !== key,
+        );
+
+        removeConversation(key);
+
+        if (key === activeConversationKey) {
+          if (remainingConversations.length > 0) {
+            setActiveConversationKey(remainingConversations[0].key);
+          } else {
+            const replacement = await createConversation({
+              modelId: modelRegistry?.activeModelId,
+            });
+            const replacementItem = toConversationItem(replacement);
+            addConversation(replacementItem, 'prepend');
+            setActiveConversationKey(replacementItem.key);
+          }
+        }
+        return true;
+      } catch (error) {
+        messageApi.error(
+          error instanceof Error ? error.message : '删除会话失败',
+        );
+        return false;
+      }
+    },
+    [
+      activeConversationKey,
+      addConversation,
+      conversationItems,
+      messageApi,
+      modelRegistry,
+      removeConversation,
+      setActiveConversationKey,
+    ],
+  );
+
+  /** 服务端更新成功后再更新本地标题，失败时保留原值。 */
+  const handleRenameConversation = useCallback(
+    async (key: string, title: string) => {
+      try {
+        const conversation = await updateConversation(key, { title });
+        setConversation(key, toConversationItem(conversation));
+        return true;
+      } catch (error) {
+        messageApi.error(
+          error instanceof Error ? error.message : '重命名会话失败',
+        );
+        return false;
+      }
+    },
+    [messageApi, setConversation],
+  );
+
+  /** 模型选择是会话级配置；切换后写回 Nest 以支持刷新恢复。 */
+  const handleModelChange = useCallback(
+    async (modelId: string) => {
+      if (!activeConversationKey) return;
+
+      try {
+        const conversation = await updateConversation(activeConversationKey, {
+          modelId,
+        });
+        setConversation(
+          activeConversationKey,
+          toConversationItem(conversation),
+        );
+      } catch (error) {
+        messageApi.error(
+          error instanceof Error ? error.message : '切换模型失败',
+        );
+      }
+    },
+    [activeConversationKey, messageApi, setConversation],
+  );
+
+  /** 将本轮消息、会话 ID 和当前模型交给 Nest 流式接口。 */
+  const handleSubmit = (value: string) => {
+    const content = value.trim();
+    if (!content || !activeConversationKey || !selectedModelId) return;
+
     onRequest({
-      messages: [{ role: 'user', content: val }],
+      conversationId: activeConversationKey,
+      model: selectedModelId,
+      messages: [{ role: 'user', content }],
     });
     listRef.current?.scrollTo({ top: 'bottom' });
-    setActiveConversationKey(activeConversationKey);
   };
 
-  // ==================== Render ====================
+  /** 只在模型注册表变化时重建 Select 选项。 */
+  const modelOptions = useMemo(
+    () =>
+      modelRegistry?.models.map((model) => ({
+        label: model.name,
+        value: model.id,
+      })) ?? [],
+    [modelRegistry?.models],
+  );
+
+  // 会话历史尚未恢复时禁止输入，避免新消息覆盖异步加载结果。
+  const chatDisabled =
+    initializing ||
+    isDefaultMessagesRequesting ||
+    !activeConversationKey ||
+    !selectedModelId;
 
   return (
     <XProvider locale={locale} theme={designTheme}>
       <ChatContext.Provider value={{ onReload, setMessage }}>
         {contextHolder}
         <div className={styles.layout}>
-          {/* 侧边栏 */}
           <ChatSide
-            conversations={conversations}
+            conversations={conversationItems}
             activeConversationKey={activeConversationKey}
             setActiveConversationKey={setActiveConversationKey}
-            addConversation={addConversation}
-            setConversations={setConversations}
-            messagesLength={messages.length}
+            onCreateConversation={handleCreateConversation}
+            onDeleteConversation={handleDeleteConversation}
+            onRenameConversation={handleRenameConversation}
+            onModelRegistryChange={setModelRegistry}
           />
 
-          {/* 聊天区域 */}
           <div className={styles.chat}>
             <ChatList
               messages={messages}
@@ -136,9 +411,14 @@ const Independent: React.FC = () => {
             <ChatSender
               inputValue={inputValue}
               setInputValue={setInputValue}
-              onSubmit={onSubmit}
+              onSubmit={handleSubmit}
               isRequesting={isRequesting}
               abort={abort}
+              modelOptions={modelOptions}
+              selectedModelId={selectedModelId}
+              onModelChange={(modelId) => void handleModelChange(modelId)}
+              modelsLoading={initializing}
+              disabled={chatDisabled}
             />
           </div>
         </div>
