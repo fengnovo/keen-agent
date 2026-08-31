@@ -1,0 +1,29 @@
+{
+  "name": "keen-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @keen-agent/ai-chat dev",
+    "dev:server": "pnpm --parallel --filter @keen-agent/ai-agent dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.24.0",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@11.24.0",
+  "type": "module",
+  "dependencies": {
+    "typescript": "^7.0.2",
+    "@types/node": "^26.4.0"
+  }
+}

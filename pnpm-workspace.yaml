@@ -1,0 +1,5 @@
+packages:
+  - "ai-agent"
+  - "ai-chat"
+allowBuilds:
+  unrs-resolver: true
