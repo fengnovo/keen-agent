@@ -2,6 +2,7 @@ import 'reflect-metadata';
 
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'node:url';
 
@@ -22,7 +23,7 @@ const parsePort = (value: string | undefined): number => {
 };
 
 const bootstrap = async () => {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const port = parsePort(process.env.AI_SERVER_PORT);
   const host = process.env.AI_SERVER_HOST?.trim() || '127.0.0.1';
   const allowedOrigins = (
@@ -33,6 +34,8 @@ const bootstrap = async () => {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+  // Base64 会比原图片增大约三分之一；该限制与聊天接口的 6 MB 图片总量配套。
+  app.useBodyParser('json', { limit: '12mb' });
   app.setGlobalPrefix('api');
   app.enableCors({
     origin: allowedOrigins,

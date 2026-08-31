@@ -10,6 +10,7 @@ import type { MessageInfo } from '@ant-design/x-sdk';
 import { useStyle } from '../_utils/styles';
 import { getRole } from '../_utils/provider';
 import type { ChatMessage } from '../_utils/types';
+import { UserMessageContent } from './UserMessageContent';
 
 /**
  * ChatList 组件属性
@@ -42,6 +43,19 @@ export const ChatList: React.FC<ChatListProps> = ({
           items={messages?.map((i) => ({
             ...i.message,
             key: i.id,
+            content:
+              i.message.role === 'user' ? (
+                <UserMessageContent
+                  content={
+                    typeof i.message.content === 'string'
+                      ? i.message.content
+                      : i.message.content.text
+                  }
+                  images={i.message.images}
+                />
+              ) : (
+                i.message.content
+              ),
             status: i.status,
             loading: i.status === 'loading',
             extraInfo: i.extraInfo,

@@ -36,6 +36,7 @@ import {
 } from './_utils/conversation-api';
 import locale, { texts } from './_utils/local';
 import { listModels, type ModelRegistry } from './_utils/model-api';
+import { filesToChatImages } from './_utils/image';
 import {
   historyMessageFactory,
   providerFactory,
@@ -356,16 +357,26 @@ const Independent: React.FC = () => {
   );
 
   /** 将本轮消息、会话 ID 和当前模型交给 Nest 流式接口。 */
-  const handleSubmit = (value: string) => {
-    const content = value.trim();
-    if (!content || !activeConversationKey || !selectedModelId) return;
+  const handleSubmit = async (value: string, files: File[]) => {
+    const content = value.trim() || (files.length ? texts.describeImages : '');
+    if (!content || !activeConversationKey || !selectedModelId) return false;
 
-    onRequest({
-      conversationId: activeConversationKey,
-      model: selectedModelId,
-      messages: [{ role: 'user', content }],
-    });
-    listRef.current?.scrollTo({ top: 'bottom' });
+    try {
+      const images = await filesToChatImages(files);
+
+      onRequest({
+        conversationId: activeConversationKey,
+        model: selectedModelId,
+        messages: [{ role: 'user', content, images }],
+      });
+      listRef.current?.scrollTo({ top: 'bottom' });
+      return true;
+    } catch (error) {
+      messageApi.error(
+        error instanceof Error ? error.message : texts.imageReadFailed,
+      );
+      return false;
+    }
   };
 
   /** 只在模型注册表变化时重建 Select 选项。 */
@@ -407,6 +418,7 @@ const Independent: React.FC = () => {
               listRef={listRef}
             />
             <ChatSender
+              key={activeConversationKey}
               inputValue={inputValue}
               setInputValue={setInputValue}
               onSubmit={handleSubmit}
@@ -417,6 +429,7 @@ const Independent: React.FC = () => {
               onModelChange={(modelId) => void handleModelChange(modelId)}
               modelsLoading={initializing}
               disabled={chatDisabled}
+              onAttachmentError={(error) => void messageApi.error(error)}
             />
           </div>
         </div>

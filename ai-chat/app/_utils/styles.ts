@@ -255,6 +255,39 @@ export const useStyle = createStyles(({ token, css }) => {
         box-sizing: border-box;
       }
     `,
+    /** 用户多模态消息中的图片与文本。 */
+    userMessage: css`
+      min-width: 0;
+    `,
+    userMessageImages: css`
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: ${token.marginXS}px;
+      margin-bottom: ${token.marginXS}px;
+    `,
+    userMessageImage: css`
+      position: relative;
+      display: block;
+      width: min(220px, 62vw);
+      aspect-ratio: 4 / 3;
+      overflow: hidden;
+      border-radius: ${token.borderRadiusLG}px;
+      background: ${token.colorFillSecondary};
+      outline: none;
+
+      img {
+        object-fit: contain;
+      }
+
+      &:focus-visible {
+        box-shadow: 0 0 0 2px ${token.colorPrimaryBorder};
+      }
+    `,
+    userMessageText: css`
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    `,
     /** 输入框样式 */
     sender: css`
       width: 100%;

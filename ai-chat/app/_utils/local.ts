@@ -99,10 +99,17 @@ export const texts = {
   isMock: '这是模拟功能',
 
   // Attachments
-  uploadFile: '上传文件',
-  uploadFiles: '上传文件',
-  clickOrDragFilesToUpload: '点击或拖拽文件到此处上传',
-  dropFileHere: '将文件拖到此处',
+  uploadFile: '上传图片',
+  uploadFiles: '上传图片',
+  clickOrDragFilesToUpload: '支持 JPG、PNG、GIF、WebP，最多 3 张',
+  dropFileHere: '将图片拖到此处',
+  addImage: '添加图片',
+  unsupportedImageType: '仅支持 JPG、PNG、GIF 和 WebP 图片',
+  imageTooLarge: '单张图片不能超过 4 MB',
+  tooManyImages: '每次最多上传 3 张图片',
+  imagesTooLarge: '图片总大小不能超过 6 MB',
+  imageReadFailed: '图片读取失败',
+  describeImages: '请描述这些图片。',
 
   // Sender
   askOrInputUseSkills: '输入问题或使用技能',

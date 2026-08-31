@@ -3,13 +3,23 @@
  * 包含附件上传、提示词、输入框等
  */
 
-import React, { useState } from 'react';
-import { Button, Flex, Select, Space } from 'antd';
+import React, { useRef, useState } from 'react';
+import { Button, Flex, Select, Space, Upload } from 'antd';
 import { PaperClipOutlined, CloudUploadOutlined } from '@ant-design/icons';
 import { Sender, Attachments } from '@ant-design/x';
+import type { AttachmentsRef } from '@ant-design/x/es/attachments';
 import type { GetProp } from 'antd';
 import { useStyle } from '../_utils/styles';
 import { texts } from '../_utils/local';
+import {
+  IMAGE_ACCEPT,
+  isSupportedImage,
+  MAX_IMAGE_COUNT,
+  MAX_IMAGE_FILE_BYTES,
+  MAX_IMAGE_TOTAL_BYTES,
+} from '../_utils/image';
+
+type AttachmentItems = NonNullable<GetProp<typeof Attachments, 'items'>>;
 
 /**
  * ChatSender 组件属性
@@ -20,7 +30,7 @@ interface ChatSenderProps {
   /** 设置输入框值 */
   setInputValue: (val: string) => void;
   /** 提交消息回调 */
-  onSubmit: (val: string) => void;
+  onSubmit: (val: string, files: File[]) => Promise<boolean>;
   /** 是否正在请求中 */
   isRequesting: boolean;
   /** 取消请求回调 */
@@ -35,6 +45,8 @@ interface ChatSenderProps {
   modelsLoading?: boolean;
   /** 会话初始化状态 */
   disabled?: boolean;
+  /** 展示图片校验或读取错误 */
+  onAttachmentError: (error: string) => void;
 }
 
 /**
@@ -52,12 +64,84 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
   onModelChange,
   modelsLoading,
   disabled,
+  onAttachmentError,
 }) => {
   const { styles } = useStyle();
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
-  const [attachedFiles, setAttachedFiles] = useState<
-    GetProp<typeof Attachments, 'items'>
-  >([]);
+  const [attachedFiles, setAttachedFiles] = useState<AttachmentItems>([]);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const attachmentsRef = useRef<AttachmentsRef>(null);
+  const submittingRef = useRef(false);
+
+  const beforeUpload: NonNullable<
+    GetProp<typeof Attachments, 'beforeUpload'>
+  > = (file, selectedFiles) => {
+    if (!isSupportedImage(file)) {
+      onAttachmentError(texts.unsupportedImageType);
+      return Upload.LIST_IGNORE;
+    }
+
+    if (file.size > MAX_IMAGE_FILE_BYTES) {
+      onAttachmentError(texts.imageTooLarge);
+      return Upload.LIST_IGNORE;
+    }
+
+    const selectedIndex = selectedFiles.findIndex(
+      (selectedFile) => selectedFile.uid === file.uid,
+    );
+    const acceptedBatch = selectedFiles
+      .slice(0, selectedIndex + 1)
+      .filter(
+        (selectedFile) =>
+          isSupportedImage(selectedFile) &&
+          selectedFile.size <= MAX_IMAGE_FILE_BYTES,
+      );
+
+    if (attachedFiles.length + acceptedBatch.length > MAX_IMAGE_COUNT) {
+      onAttachmentError(texts.tooManyImages);
+      return Upload.LIST_IGNORE;
+    }
+
+    const currentSize = attachedFiles.reduce(
+      (total, attachedFile) => total + (attachedFile.size ?? 0),
+      0,
+    );
+    const selectedSize = acceptedBatch.reduce(
+      (total, selectedFile) => total + selectedFile.size,
+      0,
+    );
+
+    if (currentSize + selectedSize > MAX_IMAGE_TOTAL_BYTES) {
+      onAttachmentError(texts.imagesTooLarge);
+      return Upload.LIST_IGNORE;
+    }
+
+    // 阻止 antd 发起独立上传；图片会在提交消息时一并发送给聊天接口。
+    return false;
+  };
+
+  const handleSubmit = async () => {
+    if (submittingRef.current) return;
+
+    submittingRef.current = true;
+    setIsPreparing(true);
+
+    try {
+      const files = attachedFiles.flatMap((attachedFile) =>
+        attachedFile.originFileObj ? [attachedFile.originFileObj] : [],
+      );
+      const submitted = await onSubmit(inputValue, files);
+
+      if (submitted) {
+        setInputValue('');
+        setAttachedFiles([]);
+        setAttachmentsOpen(false);
+      }
+    } finally {
+      submittingRef.current = false;
+      setIsPreparing(false);
+    }
+  };
 
   /** 附件上传头部 */
   const senderHeader = (
@@ -68,9 +152,13 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
       styles={{ content: { padding: 0 } }}
     >
       <Attachments
-        beforeUpload={() => false}
+        ref={attachmentsRef}
+        accept={IMAGE_ACCEPT}
+        multiple
+        beforeUpload={beforeUpload}
         items={attachedFiles}
         onChange={(info) => setAttachedFiles(info.fileList)}
+        disabled={disabled || isRequesting || isPreparing}
         placeholder={(type) =>
           type === 'drop'
             ? { title: texts.dropFileHere }
@@ -96,18 +184,23 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
       <Sender
         value={inputValue}
         header={senderHeader}
-        onSubmit={() => {
-          onSubmit(inputValue);
-          setInputValue('');
-        }}
+        onSubmit={() => void handleSubmit()}
         onChange={setInputValue}
+        onPasteFile={(files) => {
+          Array.from(files).forEach((file) => {
+            attachmentsRef.current?.upload(file);
+          });
+          setAttachmentsOpen(true);
+        }}
         onCancel={() => {
           abort();
         }}
         prefix={
           <Button
             type='text'
+            aria-label={texts.addImage}
             icon={<PaperClipOutlined style={{ fontSize: 18 }} />}
+            disabled={disabled || isRequesting || isPreparing}
             onClick={() => setAttachmentsOpen(!attachmentsOpen)}
           />
         }
@@ -129,7 +222,7 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
             {originalNode}
           </Space>
         )}
-        loading={isRequesting}
+        loading={isRequesting || isPreparing}
         disabled={disabled}
         className={styles.sender}
         allowSpeech

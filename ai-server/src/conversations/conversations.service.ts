@@ -17,12 +17,27 @@ import { z } from 'zod';
 import { ModelsService } from '../models/models.service.js';
 
 const CHAT_CONVERSATIONS_VERSION = 1;
+const SUPPORTED_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+] as const;
+
+/** 图片记录使用 data URL，便于恢复历史时直接展示并再次传给视觉模型。 */
+const chatImageSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().trim().min(1).max(255),
+  mimeType: z.enum(SUPPORTED_IMAGE_TYPES),
+  dataUrl: z.string().min(1),
+});
 
 /** 磁盘消息结构，reasoningContent 用于刷新后恢复思考区。 */
 const chatMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant']),
   content: z.string(),
+  images: z.array(chatImageSchema).max(3).optional(),
   reasoningContent: z.string().optional(),
   createdAt: z.string().datetime(),
 });
@@ -59,6 +74,7 @@ const updateConversationSchema = z
   });
 
 export type ChatMessageRecord = z.infer<typeof chatMessageSchema>;
+export type ChatImageRecord = z.infer<typeof chatImageSchema>;
 export type ChatConversation = z.infer<typeof conversationSchema>;
 type ConversationStore = z.infer<typeof conversationStoreSchema>;
 
@@ -178,6 +194,7 @@ export class ConversationsService {
   appendUserMessage(
     id: string,
     content: string,
+    images?: ChatImageRecord[],
   ): Promise<ChatConversation> {
     return this.mutate((store) => {
       const conversation = this.findOrThrow(store, id);
@@ -187,6 +204,7 @@ export class ConversationsService {
         id: randomUUID(),
         role: 'user',
         content,
+        images: images?.length ? images : undefined,
         createdAt: now,
       });
 

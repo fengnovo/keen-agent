@@ -3,11 +3,14 @@
  * 浏览器只访问 Next.js 的同源代理路径，真实数据由 Nest AI Server 持久化。
  */
 
+import type { ChatImage } from './types';
+
 /** 一条已经写入服务端会话文件的消息。 */
 export interface ConversationMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  images?: ChatImage[];
   reasoningContent?: string;
   createdAt: string;
 }

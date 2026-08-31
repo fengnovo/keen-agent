@@ -185,6 +185,7 @@ export const historyMessageFactory = async ({
       message: {
         role: message.role,
         content,
+        images: message.images,
       },
     };
   });

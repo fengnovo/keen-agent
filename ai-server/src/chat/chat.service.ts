@@ -12,8 +12,67 @@ import { z } from 'zod';
 import {
   ConversationsService,
   type ChatConversation,
+  type ChatImageRecord,
 } from '../conversations/conversations.service.js';
 import { ModelsService } from '../models/models.service.js';
+
+const SUPPORTED_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+] as const;
+const MAX_IMAGE_COUNT = 3;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_IMAGE_TOTAL_BYTES = 6 * 1024 * 1024;
+const IMAGE_DATA_URL_PATTERN =
+  /^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
+
+/** 服务端不信任浏览器校验，重新核对 MIME、base64 和实际解码尺寸。 */
+const requestImageSchema = z
+  .object({
+    id: z.string().min(1).max(255),
+    name: z.string().trim().min(1).max(255),
+    mimeType: z.enum(SUPPORTED_IMAGE_TYPES),
+    dataUrl: z.string().min(1),
+  })
+  .superRefine((image, context) => {
+    const match = IMAGE_DATA_URL_PATTERN.exec(image.dataUrl);
+
+    if (!match || match[1] !== image.mimeType) {
+      context.addIssue({
+        code: 'custom',
+        path: ['dataUrl'],
+        message: '图片 data URL 或 MIME 类型无效',
+      });
+      return;
+    }
+
+    if (Buffer.byteLength(match[2], 'base64') > MAX_IMAGE_BYTES) {
+      context.addIssue({
+        code: 'custom',
+        path: ['dataUrl'],
+        message: '单张图片不能超过 4 MB',
+      });
+    }
+  });
+
+const requestImagesSchema = z
+  .array(requestImageSchema)
+  .max(MAX_IMAGE_COUNT, '每次最多上传 3 张图片')
+  .superRefine((images, context) => {
+    const totalBytes = images.reduce((total, image) => {
+      const base64 = IMAGE_DATA_URL_PATTERN.exec(image.dataUrl)?.[2];
+      return total + (base64 ? Buffer.byteLength(base64, 'base64') : 0);
+    }, 0);
+
+    if (totalBytes > MAX_IMAGE_TOTAL_BYTES) {
+      context.addIssue({
+        code: 'custom',
+        message: '图片总大小不能超过 6 MB',
+      });
+    }
+  });
 
 /** 页面只需传会话、可选模型和消息；服务端只采纳最后一条用户消息。 */
 const chatRequestSchema = z.object({
@@ -24,6 +83,7 @@ const chatRequestSchema = z.object({
       z.object({
         role: z.string(),
         content: z.unknown(),
+        images: requestImagesSchema.optional(),
       }),
     )
     .min(1),
@@ -115,8 +175,9 @@ export class ChatService {
       typeof lastUserMessage?.content === 'string'
         ? lastUserMessage.content.trim()
         : '';
+    const userImages = lastUserMessage?.images ?? [];
 
-    if (!userContent) {
+    if (!userContent && userImages.length === 0) {
       throw new BadRequestException('缺少有效的用户消息');
     }
 
@@ -140,7 +201,8 @@ export class ChatService {
 
     conversation = await this.conversationsService.appendUserMessage(
       conversation.id,
-      userContent,
+      userContent || '请描述这些图片。',
+      userImages,
     );
 
     try {
@@ -169,10 +231,22 @@ export class ChatService {
       AbortSignal.timeout(60_000),
     ]);
     // 每次创建新 Agent，因此需要把该 Web 会话的完整历史注入新线程。
-    const messages = prepared.conversation.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-    }));
+    const messages = prepared.conversation.messages.map((message) => {
+      if (message.role !== 'user' || !message.images?.length) {
+        return { role: message.role, content: message.content };
+      }
+
+      return {
+        role: message.role,
+        content: [
+          { type: 'text', text: message.content },
+          ...message.images.map((image: ChatImageRecord) => ({
+            type: 'image_url',
+            image_url: { url: image.dataUrl },
+          })),
+        ],
+      };
+    });
     const stream = await prepared.agent.stream(
       { messages },
       {

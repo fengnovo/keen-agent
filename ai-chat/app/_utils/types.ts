@@ -8,11 +8,20 @@ import type { ActionsFeedbackProps } from '@ant-design/x';
 import type { useXChat } from '@ant-design/x-sdk';
 import type { XModelMessage } from '@ant-design/x-sdk';
 
+/** 发送给视觉模型并随会话持久化的图片。 */
+export interface ChatImage {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+}
+
 /**
  * 聊天消息类型
  * 扩展 XModelMessage，添加额外的反馈信息
  */
 export interface ChatMessage extends XModelMessage {
+  images?: ChatImage[];
   extraInfo?: {
     feedback: ActionsFeedbackProps['value'];
   };
