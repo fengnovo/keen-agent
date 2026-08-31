@@ -4,14 +4,25 @@
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { stdin as input, stdout as output } from 'node:process';
+import { select } from '@inquirer/prompts';
 import { isBaseMessage } from '@langchain/core/messages';
-import type { createDeepAgent } from 'deepagents';
 
+import { createAgent } from './agent.ts';
 import {
   CONVERSATION_FILE,
   loadConversationHistory,
   saveConversationHistory,
 } from './conversation-store.ts';
+import {
+  MODEL_CONFIG_FILE,
+  findModel,
+  getActiveModel,
+  loadModelRegistry,
+  saveModelRegistry,
+  withActiveModel,
+  type ModelConfig,
+  type ModelRegistry,
+} from './model-config.ts';
 import {
   createLoading,
   formatValue,
@@ -19,9 +30,6 @@ import {
   terminalColor,
   writeMessageChunk,
 } from './util.ts';
-
-/** Agent 实例类型（由 createDeepAgent 创建） */
-type Agent = ReturnType<typeof createDeepAgent>;
 
 // 加载动画实例：用于在等待模型响应时展示动态进度
 const loading = createLoading();
@@ -119,6 +127,20 @@ const handleToolEvent = (payload: any) => {
   }
 };
 
+const printModelList = (
+  registry: ModelRegistry,
+  activeModel: ModelConfig,
+): void => {
+  console.log('\n可用模型：');
+  registry.models.forEach((model, index) => {
+    const activeMarker = model.id === activeModel.id ? '*' : ' ';
+    console.log(
+      `${activeMarker} ${index + 1}. ${model.name} (${model.id}) -> ${model.model}`,
+    );
+  });
+  console.log(`\n模型配置：${MODEL_CONFIG_FILE}`);
+};
+
 /**
  * 运行持续对话：
  * 1. 循环读取用户输入
@@ -126,12 +148,23 @@ const handleToolEvent = (payload: any) => {
  * 3. 流式处理模型消息与工具事件
  * 4. 将完整上下文保存到本地 JSON 文件
  */
-export const runConversation = async (agent: Agent) => {
+export const runConversation = async () => {
+  const loadedModelRegistry = await loadModelRegistry();
+  let modelRegistry = loadedModelRegistry.registry;
+  let activeModel = getActiveModel(modelRegistry);
+  let agent = createAgent(activeModel);
+
   // 每次启动使用新的内存线程，并在首次请求时注入磁盘中恢复的历史消息
-  const threadId = randomUUID();
+  let threadId = randomUUID();
   let restoredMessages = await loadConversationHistory();
 
-  console.log('开始持续对话，输入 exit、quit 或 退出 即可结束会话。');
+  console.log(
+    '开始持续对话，输入 /model 可切换模型，输入 exit、quit 或 退出 即可结束会话。',
+  );
+  console.log(`当前模型：${activeModel.name} (${activeModel.id})`);
+  if (loadedModelRegistry.created) {
+    console.log(`已创建本地模型配置：${MODEL_CONFIG_FILE}`);
+  }
   if (restoredMessages.length > 0) {
     console.log(
       `已从 ${CONVERSATION_FILE} 恢复 ${restoredMessages.length} 条历史消息。\n`,
@@ -158,6 +191,102 @@ export const runConversation = async (agent: Agent) => {
 
     // 忽略空输入
     if (!userInput) continue;
+
+    const modelCommand = userInput.match(/^\/model(?:\s+(.*))?$/i);
+    if (modelCommand) {
+      resetMessageSection();
+      let selection = modelCommand[1]?.trim() ?? '';
+
+      if (selection === 'list' || selection === 'ls') {
+        printModelList(modelRegistry, activeModel);
+        continue;
+      }
+
+      if (selection === 'current') {
+        console.log(`当前模型：${activeModel.name} (${activeModel.id})`);
+        continue;
+      }
+
+      if (!selection) {
+        console.log(`\n模型配置：${MODEL_CONFIG_FILE}`);
+
+        try {
+          selection = await select({
+            message: '请选择要使用的模型',
+            choices: modelRegistry.models.map((model) => ({
+              name: `${model.id === activeModel.id ? '✓ ' : ''}${model.name} (${model.id})`,
+              value: model.id,
+              short: `${model.name} (${model.id})`,
+              description: `请求模型：${model.model} · Provider：${model.provider}`,
+            })),
+            default: activeModel.id,
+            pageSize: Math.min(Math.max(modelRegistry.models.length, 7), 12),
+            loop: false,
+            theme: {
+              indexMode: 'number',
+            },
+          });
+        } catch (error) {
+          if (error instanceof Error && error.name === 'ExitPromptError') {
+            console.log('已取消模型切换。');
+            continue;
+          }
+
+          const message =
+            error instanceof Error ? error.message : formatValue(error);
+          console.error(
+            terminalColor.error(`无法显示模型选择器：${message}`),
+          );
+          continue;
+        }
+      }
+
+      const selectedModel = findModel(modelRegistry, selection);
+      if (!selectedModel) {
+        console.error(
+          terminalColor.error(
+            `未找到模型“${selection}”，请输入 /model 查看可用模型。`,
+          ),
+        );
+        continue;
+      }
+
+      if (selectedModel.id === activeModel.id) {
+        console.log(`当前已经是 ${activeModel.name} (${activeModel.id})。`);
+        continue;
+      }
+
+      try {
+        // 先验证新模型环境配置，再持久化选择并替换运行中的 Agent
+        const nextAgent = createAgent(selectedModel);
+        const nextRestoredMessages = await loadConversationHistory();
+        const nextRegistry = withActiveModel(
+          modelRegistry,
+          selectedModel.id,
+        );
+        await saveModelRegistry(nextRegistry);
+
+        agent = nextAgent;
+        activeModel = selectedModel;
+        modelRegistry = nextRegistry;
+        threadId = randomUUID();
+        restoredMessages = nextRestoredMessages;
+
+        console.log(
+          terminalColor.output(
+            `已切换到 ${activeModel.name} (${activeModel.id})。`,
+          ),
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : formatValue(error);
+        console.error(
+          terminalColor.error(`模型切换失败：${message}`),
+        );
+      }
+
+      continue;
+    }
 
     loading.start('正在等待模型响应...');
 

@@ -9,6 +9,9 @@ import {
 } from '@langchain/core/messages';
 
 const HISTORY_VERSION = 1;
+const LEGACY_TOOL_NAMES: Readonly<Record<string, string>> = {
+  天地同寿算法: 'tiandi_tongshou',
+};
 
 export const CONVERSATION_FILE = fileURLToPath(
   new URL('../_data/conversation.json', import.meta.url),
@@ -19,6 +22,30 @@ interface StoredConversation {
   updatedAt: string;
   messages: StoredMessage[];
 }
+
+/**
+ * 将旧会话中的非 ASCII 工具名迁移为跨模型兼容名称。
+ * 这里只替换结构化对象的 name 字段，不修改用户消息或回答正文。
+ */
+const normalizeStoredToolNames = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(normalizeStoredToolNames);
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nestedValue]) => {
+      if (key === 'name' && typeof nestedValue === 'string') {
+        return [key, LEGACY_TOOL_NAMES[nestedValue] ?? nestedValue];
+      }
+
+      return [key, normalizeStoredToolNames(nestedValue)];
+    }),
+  );
+};
 
 const isStoredConversation = (value: unknown): value is StoredConversation => {
   if (!value || typeof value !== 'object') return false;
@@ -43,7 +70,11 @@ export const loadConversationHistory = async (
       throw new Error('文件结构或版本不受支持');
     }
 
-    return mapStoredMessagesToChatMessages(storedConversation.messages);
+    const normalizedMessages = normalizeStoredToolNames(
+      storedConversation.messages,
+    ) as StoredMessage[];
+
+    return mapStoredMessagesToChatMessages(normalizedMessages);
   } catch (error) {
     if (
       error &&
