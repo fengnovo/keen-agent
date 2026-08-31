@@ -63,7 +63,7 @@ export interface LoadedModelRegistry {
 }
 
 export const MODEL_CONFIG_FILE = fileURLToPath(
-  new URL('../_data/models.json', import.meta.url),
+  new URL('../../.keen-agent/models.json', import.meta.url),
 );
 
 export const formatModelValidationError = (error: z.ZodError): string =>

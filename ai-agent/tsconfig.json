@@ -42,5 +42,5 @@
     "skipLibCheck": true,
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["ai-server", "node_modules"]
+  "exclude": ["node_modules"]
 }

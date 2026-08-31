@@ -1,6 +1,6 @@
 # Keen Agent AI Server
 
-Nest API 直接读写 `ai-agent/_data/models.json`，与命令行 Agent 共用同一份模型配置。
+Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent 共用同一份模型配置。
 
 默认地址为 `http://127.0.0.1:3001/api`，可使用以下环境变量覆盖：
 

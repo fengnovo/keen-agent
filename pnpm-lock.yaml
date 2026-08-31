@@ -241,40 +241,6 @@ importers:
         specifier: ^4.5.4
         version: 4.5.4
 
-  ai-agent/ai-server:
-    dependencies:
-      '@keen-agent/ai-agent':
-        specifier: workspace:*
-        version: link:..
-      '@nestjs/common':
-        specifier: ^12.0.1
-        version: 12.0.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
-      '@nestjs/core':
-        specifier: ^12.0.1
-        version: 12.0.1(@nestjs/common@12.0.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/platform-express@12.0.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
-      '@nestjs/platform-express':
-        specifier: ^12.0.1
-        version: 12.0.1(@nestjs/common@12.0.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@12.0.1)(supports-color@7.2.0)
-      dotenv:
-        specifier: ^17.4.2
-        version: 17.4.2
-      reflect-metadata:
-        specifier: ^0.2.2
-        version: 0.2.2
-      rxjs:
-        specifier: ^7.8.2
-        version: 7.8.2
-    devDependencies:
-      '@nestjs/cli':
-        specifier: ^12.0.0
-        version: 12.0.0(@types/node@26.4.0)
-      '@types/node':
-        specifier: ^26.4.0
-        version: 26.4.0
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
   ai-chat:
     dependencies:
       '@ant-design/icons':
@@ -332,6 +298,40 @@ importers:
       tailwindcss:
         specifier: ^4
         version: 4.3.3
+
+  ai-server:
+    dependencies:
+      '@keen-agent/ai-agent':
+        specifier: workspace:*
+        version: link:../ai-agent
+      '@nestjs/common':
+        specifier: ^12.0.1
+        version: 12.0.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
+      '@nestjs/core':
+        specifier: ^12.0.1
+        version: 12.0.1(@nestjs/common@12.0.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/platform-express@12.0.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/platform-express':
+        specifier: ^12.0.1
+        version: 12.0.1(@nestjs/common@12.0.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@12.0.1)(supports-color@7.2.0)
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
+      reflect-metadata:
+        specifier: ^0.2.2
+        version: 0.2.2
+      rxjs:
+        specifier: ^7.8.2
+        version: 7.8.2
+    devDependencies:
+      '@nestjs/cli':
+        specifier: ^12.0.0
+        version: 12.0.0(@types/node@26.4.0)
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
 packages:
 

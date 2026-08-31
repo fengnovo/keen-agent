@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { AppModule } from './app.module.js';
 
 dotenv.config({
-  path: fileURLToPath(new URL('../../.env', import.meta.url)),
+  path: fileURLToPath(new URL('../../ai-agent/.env', import.meta.url)),
 });
 
 const parsePort = (value: string | undefined): number => {

@@ -1,6 +1,6 @@
 packages:
   - "ai-agent"
-  - "ai-agent/ai-server"
+  - "ai-server"
   - "ai-chat"
 allowBuilds:
   unrs-resolver: true

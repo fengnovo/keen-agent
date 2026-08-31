@@ -14,7 +14,7 @@ const LEGACY_TOOL_NAMES: Readonly<Record<string, string>> = {
 };
 
 export const CONVERSATION_FILE = fileURLToPath(
-  new URL('../_data/conversation.json', import.meta.url),
+  new URL('../../.keen-agent/conversation.json', import.meta.url),
 );
 
 interface StoredConversation {

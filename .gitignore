@@ -1,4 +1,4 @@
 .env
-_data
+/.keen-agent
 node_modules
 .DS_Store
