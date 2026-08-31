@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "pnpm --parallel --filter @keen-agent/ai-chat dev",
-    "dev:server": "pnpm --parallel --filter @keen-agent/ai-agent dev",
+    "dev:server": "pnpm --filter @keen-agent/ai-agent dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"

@@ -175,6 +175,8 @@ export const runConversation = async (agent: Agent) => {
         {
           configurable: { thread_id: threadId },
           streamMode: ['messages', 'tools'],
+          // 限制整轮 Agent 执行时间，包含模型重试和工具调用
+          signal: AbortSignal.timeout(30_000),
         },
       );
 
@@ -205,11 +207,25 @@ export const runConversation = async (agent: Agent) => {
       })) as unknown as { values: { messages?: unknown } };
       const stateMessages = state.values.messages;
 
-      if (!Array.isArray(stateMessages) || !stateMessages.every(isBaseMessage)) {
+      if (
+        !Array.isArray(stateMessages) ||
+        !stateMessages.every(isBaseMessage)
+      ) {
         throw new Error('Agent 状态中缺少可持久化的完整消息列表');
       }
 
       await saveConversationHistory(stateMessages);
+    } catch (error) {
+      loading.stop();
+      resetMessageSection();
+
+      const errorDetails =
+        error instanceof Error
+          ? (error.stack ?? `${error.name}: ${error.message}`)
+          : formatValue(error);
+
+      console.error(`\n${terminalColor.error('[本轮对话失败]')}`);
+      console.error(errorDetails);
     } finally {
       loading.stop();
     }

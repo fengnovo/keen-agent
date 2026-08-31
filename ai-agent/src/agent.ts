@@ -37,9 +37,10 @@ export const createAgent = (): ReturnType<typeof createDeepAgent> => {
     temperature: 0, // 固定为 0，保证回答稳定可复现
     model: process.env.MODEL,
     apiKey: process.env.ANTHROPIC_API_KEY,
+    maxRetries: 1, // 最多重试 1 次，避免失败时长时间无响应
     clientOptions: {
       baseURL: process.env.ANTHROPIC_BASE_URL,
-      timeout: 30_000, // 请求超时时间：30 秒
+      timeout: 15_000, // 请求超时时间：15 秒
     },
   });
 
