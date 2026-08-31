@@ -6,7 +6,7 @@ import { z } from 'zod';
 const MODEL_CONFIG_VERSION = 1;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-const modelConfigSchema = z.object({
+export const modelConfigSchema = z.object({
   id: z.string().trim().min(1),
   name: z.string().trim().min(1),
   provider: z.literal('anthropic'),
@@ -20,7 +20,7 @@ const modelConfigSchema = z.object({
   maxTokens: z.number().int().positive().optional(),
 });
 
-const modelRegistrySchema = z
+export const modelRegistrySchema = z
   .object({
     version: z.literal(MODEL_CONFIG_VERSION),
     activeModelId: z.string().trim().min(1),
@@ -66,7 +66,7 @@ export const MODEL_CONFIG_FILE = fileURLToPath(
   new URL('../_data/models.json', import.meta.url),
 );
 
-const formatValidationError = (error: z.ZodError): string =>
+export const formatModelValidationError = (error: z.ZodError): string =>
   error.issues
     .map((issue) => {
       const path = issue.path.length > 0 ? issue.path.join('.') : 'root';
@@ -128,7 +128,7 @@ export const loadModelRegistry = async (
     const result = modelRegistrySchema.safeParse(parsed);
 
     if (!result.success) {
-      throw new Error(formatValidationError(result.error));
+      throw new Error(formatModelValidationError(result.error));
     }
 
     return { registry: result.data, created: false };

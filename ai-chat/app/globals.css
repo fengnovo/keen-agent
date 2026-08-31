@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #141414;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.x-markdown-theme .xmd-tail {
+  display: inline-block;
+  margin-inline-start: 2px;
+  color: var(--xmd-tail-color);
+  animation: markdown-tail-blink 900ms steps(1, end) infinite;
+}
+
+.x-markdown-theme .markdown-code-streaming {
+  box-shadow: inset 0 0 0 1px var(--primary-color);
+}
+
+/* 允许 Markdown 在气泡、思考区和列表项中继续收缩。 */
+.x-markdown-theme,
+.x-markdown-theme
+  :where(
+    .markdown-thought-chain,
+    .ant-thought-chain-node,
+    .ant-thought-chain-node-box,
+    .ant-thought-chain-node-content,
+    .ant-thought-chain-node-content-box,
+    ul,
+    ol,
+    li
+  ) {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.x-markdown-theme .markdown-thought-chain {
+  width: 100%;
+}
+
+.x-markdown-theme .ant-thought-chain-node-content-box {
+  /* 思考内容使用次级灰色，和正式答案建立清晰的视觉层级。 */
+  --text-color: var(--thinking-text-color, #8c8c8c);
+  --heading-color: var(--thinking-heading-color, #595959);
+  --xmd-tail-color: var(--thinking-text-color, #8c8c8c);
+  color: var(--thinking-text-color, #8c8c8c);
+  overflow-wrap: anywhere;
+}
+
+.x-markdown-theme
+  .markdown-thought-chain
+  :where(.ant-thought-chain-node-title, .ant-thought-chain-node-collapse-icon) {
+  color: var(--thinking-title-color, #595959);
+}
+
+.x-markdown-theme
+  .markdown-thought-chain
+  .ant-thought-chain-node-content-box
+  :where(a, blockquote) {
+  color: var(--thinking-heading-color, #595959);
+}
+
+/* 只降低思考正文颜色，不覆盖代码高亮器自己的语法色。 */
+.x-markdown-theme
+  .markdown-thought-chain
+  .ant-thought-chain-node-content-box
+  :not(pre)
+  > code {
+  color: var(--thinking-heading-color, #595959) !important;
+}
+
+/* 窄屏时由代码区域自身横向滚动，不扩大消息或页面宽度。 */
+.x-markdown-theme .markdown-code-block,
+.x-markdown-theme .markdown-code-block .ant-codeHighlighter-header,
+.x-markdown-theme .markdown-code-block .ant-codeHighlighter-code {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.x-markdown-theme .markdown-code-block {
+  overflow: hidden;
+}
+
+.x-markdown-theme .markdown-code-block .ant-codeHighlighter-code > pre {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+  overflow-x: auto !important;
+  overflow-y: hidden;
+}
+
+.x-markdown-theme .markdown-code-block .ant-codeHighlighter-code > pre > code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+/* 行内代码也必须允许断行，避免长文件名或命令撑开页面。 */
+.x-markdown-theme :not(pre) > code {
+  max-width: 100%;
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@keyframes markdown-tail-blink {
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .x-markdown-theme .xmd-tail {
+    animation: none;
+  }
+}
