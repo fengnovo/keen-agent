@@ -16,7 +16,12 @@ Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent �
 上传图片且当前会话选择的不是视觉模型时，服务端会先调用 `VISION_MODEL_ID`
 对应的模型完整提取图片文字，再把 OCR 结果作为上下文交给当前
 会话模型完成推理与回答。解析结果会随用户消息持久化，因此后续不带图片的追问也能
-继续使用这些信息。如果当前会话直接选择了视觉模型，则保留图片直传模式。
+继续使用这些信息。
+
+多图不会放在一次 OCR 请求中：服务端会为每张图片发起独立调用，并按上传顺序添加
+“第 N 张图片”边界后合并缓存。这样可以避免 OpenAI 兼容端点只返回第一张图片结果，
+同时防止某一张长文档占满缓存导致后续图片内容丢失。如果当前会话直接选择视觉模型，
+也复用相同的逐图识别流程，只是不再调用主 Agent。
 
 模型注册表中必须同时存在主模型和视觉模型配置，并分别提供其 `apiKeyEnv` 与
 Base URL。视觉模型的默认配置 ID 应为 `qwen3.5-ocr`；使用其他 ID 时设置
@@ -26,6 +31,15 @@ Base URL。视觉模型的默认配置 ID 应为 `qwen3.5-ocr`；使用其他 ID
 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`。不要使用
 `/apps/anthropic`：该端点会错误处理 OCR 图片请求。DeepSeek 等主模型可以继续使用
 `provider: "anthropic"`。模型管理页面支持选择这两种兼容协议。
+
+## 会话级 Agent 能力
+
+每条 Web 会话会额外保存 `thinkingEnabled` 和 `toolsEnabled`。旧会话读取时默认补为
+`true`，不需要手动迁移会话文件。`PATCH /api/conversations/:id` 可以修改这两个字段；
+下一轮聊天准备阶段会把它们传给 `ai-agent` 的 `createAgent`。
+
+`thinkingEnabled` 控制回答策略提示，`toolsEnabled` 控制 DeepAgent 是否注册工具。直接选择
+OCR 模型时服务端绕过 DeepAgent，所以开关只会保存，不影响该次 OCR 直连请求。
 
 ## API
 

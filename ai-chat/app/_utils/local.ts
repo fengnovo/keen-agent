@@ -92,6 +92,9 @@ export const texts = {
 
   // Think
   deepThinking: '深度思考',
+  deepThinkingDescription: '为当前会话启用更充分的分析',
+  toolCalling: '工具调用',
+  toolCallingDescription: '允许当前会话中的 Agent 调用已注册工具',
   completeThinking: '思考完成',
 
   // Footer Actions

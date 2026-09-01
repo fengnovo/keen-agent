@@ -1,3 +1,7 @@
+'use client';
+
+import { useState } from 'react';
+import { Image as ImagePreview } from 'antd';
 import Image from 'next/image';
 
 import { useStyle } from '../_utils/styles';
@@ -14,31 +18,50 @@ export const UserMessageContent: React.FC<UserMessageContentProps> = ({
   images,
 }) => {
   const { styles } = useStyle();
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const imageItems =
+    images?.map((image) => ({ src: image.dataUrl, alt: image.name })) ?? [];
 
   return (
     <div className={styles.userMessage}>
       {images?.length ? (
-        <div className={styles.userMessageImages}>
-          {images.map((image) => (
-            <a
-              key={image.id}
-              className={styles.userMessageImage}
-              href={image.dataUrl}
-              target='_blank'
-              rel='noreferrer'
-              aria-label={`查看原图：${image.name}`}
-              title={image.name}
-            >
-              <Image
-                src={image.dataUrl}
-                alt={image.name}
-                fill
-                sizes='220px'
-                unoptimized
-              />
-            </a>
-          ))}
-        </div>
+        <ImagePreview.PreviewGroup
+          items={imageItems}
+          preview={{
+            open: previewOpen,
+            current: previewIndex,
+            onOpenChange: (open, { current }) => {
+              setPreviewOpen(open);
+              setPreviewIndex(current);
+            },
+            onChange: setPreviewIndex,
+          }}
+        >
+          <div className={styles.userMessageImages}>
+            {images.map((image, index) => (
+              <button
+                key={image.id}
+                type='button'
+                className={styles.userMessageImage}
+                aria-label={`预览原图：${image.name}`}
+                title={image.name}
+                onClick={() => {
+                  setPreviewIndex(index);
+                  setPreviewOpen(true);
+                }}
+              >
+                <Image
+                  src={image.dataUrl}
+                  alt={image.name}
+                  fill
+                  sizes='220px'
+                  unoptimized
+                />
+              </button>
+            ))}
+          </div>
+        </ImagePreview.PreviewGroup>
       ) : null}
       <div className={styles.userMessageText}>{content}</div>
     </div>

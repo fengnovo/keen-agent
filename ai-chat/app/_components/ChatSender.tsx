@@ -5,7 +5,12 @@
 
 import React, { useRef, useState } from 'react';
 import { Button, Flex, Select, Space, Upload } from 'antd';
-import { PaperClipOutlined, CloudUploadOutlined } from '@ant-design/icons';
+import {
+  BulbOutlined,
+  CloudUploadOutlined,
+  PaperClipOutlined,
+  ToolOutlined,
+} from '@ant-design/icons';
 import { Sender, Attachments } from '@ant-design/x';
 import type { AttachmentsRef } from '@ant-design/x/es/attachments';
 import type { GetProp } from 'antd';
@@ -41,6 +46,16 @@ interface ChatSenderProps {
   selectedModelId?: string;
   /** 修改当前会话模型 */
   onModelChange: (modelId: string) => void;
+  /** 当前会话是否启用深度思考 */
+  thinkingEnabled: boolean;
+  /** 当前会话是否允许 Agent 调用工具 */
+  toolsEnabled: boolean;
+  /** 正在持久化的会话能力 */
+  updatingFeature?: 'thinkingEnabled' | 'toolsEnabled';
+  /** 修改当前会话的深度思考开关 */
+  onThinkingChange: (enabled: boolean) => void;
+  /** 修改当前会话的工具调用开关 */
+  onToolsChange: (enabled: boolean) => void;
   /** 模型列表加载状态 */
   modelsLoading?: boolean;
   /** 会话初始化状态 */
@@ -62,6 +77,11 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
   modelOptions,
   selectedModelId,
   onModelChange,
+  thinkingEnabled,
+  toolsEnabled,
+  updatingFeature,
+  onThinkingChange,
+  onToolsChange,
   modelsLoading,
   disabled,
   onAttachmentError,
@@ -72,6 +92,8 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
   const [isPreparing, setIsPreparing] = useState(false);
   const attachmentsRef = useRef<AttachmentsRef>(null);
   const submittingRef = useRef(false);
+  const interactionDisabled = disabled || isRequesting || isPreparing;
+  const featureDisabled = interactionDisabled || Boolean(updatingFeature);
 
   const beforeUpload: NonNullable<
     GetProp<typeof Attachments, 'beforeUpload'>
@@ -149,6 +171,8 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
       title={texts.uploadFile}
       open={attachmentsOpen}
       onOpenChange={setAttachmentsOpen}
+      // 关闭预览区时仍保留隐藏的 file input，纸夹按钮才能直接唤起系统选择器。
+      forceRender
       styles={{ content: { padding: 0 } }}
     >
       <Attachments
@@ -157,8 +181,11 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
         multiple
         beforeUpload={beforeUpload}
         items={attachedFiles}
-        onChange={(info) => setAttachedFiles(info.fileList)}
-        disabled={disabled || isRequesting || isPreparing}
+        onChange={(info) => {
+          setAttachedFiles(info.fileList);
+          setAttachmentsOpen(info.fileList.length > 0);
+        }}
+        disabled={interactionDisabled}
         placeholder={(type) =>
           type === 'drop'
             ? { title: texts.dropFileHere }
@@ -190,37 +217,74 @@ export const ChatSender: React.FC<ChatSenderProps> = ({
           Array.from(files).forEach((file) => {
             attachmentsRef.current?.upload(file);
           });
-          setAttachmentsOpen(true);
         }}
         onCancel={() => {
           abort();
         }}
-        prefix={
-          <Button
-            type='text'
-            aria-label={texts.addImage}
-            icon={<PaperClipOutlined style={{ fontSize: 18 }} />}
-            disabled={disabled || isRequesting || isPreparing}
-            onClick={() => setAttachmentsOpen(!attachmentsOpen)}
-          />
-        }
-        suffix={(originalNode) => (
-          <Space size={4}>
-            {/* 模型属于当前会话；请求期间锁定，避免一次流中途切换模型。 */}
-            <Select
-              aria-label={texts.selectModel}
-              className={styles.modelSelect}
-              variant='borderless'
-              value={selectedModelId}
-              options={modelOptions}
-              loading={modelsLoading}
-              disabled={disabled || isRequesting || modelOptions.length === 0}
-              optionFilterProp='label'
-              popupMatchSelectWidth={false}
-              onChange={onModelChange}
-            />
-            {originalNode}
-          </Space>
+        suffix={false}
+        footer={(originalNode) => (
+          <Flex justify='space-between' align='center' gap={8} wrap>
+            <Space size={8} wrap>
+              <Sender.Switch
+                value={thinkingEnabled}
+                loading={updatingFeature === 'thinkingEnabled'}
+                disabled={featureDisabled}
+                icon={<BulbOutlined />}
+                role='switch'
+                aria-label={texts.deepThinking}
+                aria-checked={thinkingEnabled}
+                title={texts.deepThinkingDescription}
+                onChange={onThinkingChange}
+              >
+                {texts.deepThinking}
+              </Sender.Switch>
+              <Sender.Switch
+                value={toolsEnabled}
+                loading={updatingFeature === 'toolsEnabled'}
+                disabled={featureDisabled}
+                icon={<ToolOutlined />}
+                role='switch'
+                aria-label={texts.toolCalling}
+                aria-checked={toolsEnabled}
+                title={texts.toolCallingDescription}
+                onChange={onToolsChange}
+              >
+                {texts.toolCalling}
+              </Sender.Switch>
+            </Space>
+
+            <Space size={4}>
+              {/* 模型属于当前会话；请求期间锁定，避免一次流中途切换模型。 */}
+              <Select
+                aria-label={texts.selectModel}
+                className={styles.modelSelect}
+                variant='borderless'
+                value={selectedModelId}
+                options={modelOptions}
+                loading={modelsLoading}
+                disabled={
+                  disabled || isRequesting || modelOptions.length === 0
+                }
+                optionFilterProp='label'
+                popupMatchSelectWidth={false}
+                onChange={onModelChange}
+              />
+              <Button
+                type='text'
+                aria-label={texts.addImage}
+                title={texts.addImage}
+                icon={<PaperClipOutlined style={{ fontSize: 18 }} />}
+                disabled={interactionDisabled}
+                onClick={() =>
+                  attachmentsRef.current?.select({
+                    accept: IMAGE_ACCEPT,
+                    multiple: true,
+                  })
+                }
+              />
+              {originalNode}
+            </Space>
+          </Flex>
         )}
         loading={isRequesting || isPreparing}
         disabled={disabled}

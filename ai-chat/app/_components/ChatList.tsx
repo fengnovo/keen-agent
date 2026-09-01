@@ -60,11 +60,6 @@ export const ChatList: React.FC<ChatListProps> = ({
             loading: i.status === 'loading',
             extraInfo: i.extraInfo,
           }))}
-          styles={{
-            root: {
-              maxWidth: 940,
-            },
-          }}
           role={getRole(className)}
         />
       ) : null}

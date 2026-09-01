@@ -53,6 +53,8 @@ interface ConversationListItem extends ConversationData {
   label: string;
   group: string;
   modelId: string;
+  thinkingEnabled: boolean;
+  toolsEnabled: boolean;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -85,6 +87,8 @@ const toConversationItem = (
   label: conversation.title,
   group: getConversationGroup(conversation.updatedAt),
   modelId: conversation.modelId,
+  thinkingEnabled: conversation.thinkingEnabled,
+  toolsEnabled: conversation.toolsEnabled,
   createdAt: conversation.createdAt,
   updatedAt: conversation.updatedAt,
   messageCount:
@@ -133,6 +137,9 @@ const Independent: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [modelRegistry, setModelRegistry] = useState<ModelRegistry>();
   const [initializing, setInitializing] = useState(true);
+  const [updatingFeature, setUpdatingFeature] = useState<
+    'thinkingEnabled' | 'toolsEnabled'
+  >();
   // 复用初始化 Promise，避免 React 开发模式重复执行 Effect 时创建两条默认会话。
   const initializationRef = useRef<Promise<InitialChatData> | undefined>(
     undefined,
@@ -356,6 +363,37 @@ const Independent: React.FC = () => {
     [activeConversationKey, messageApi, setConversation],
   );
 
+  /**
+   * Agent 能力是会话配置而非浏览器临时状态；服务端保存成功后再更新按钮。
+   * 关闭工具后，下一轮请求创建的 DeepAgent 将不会收到任何工具定义。
+   */
+  const handleFeatureChange = useCallback(
+    async (
+      feature: 'thinkingEnabled' | 'toolsEnabled',
+      enabled: boolean,
+    ) => {
+      if (!activeConversationKey) return;
+
+      setUpdatingFeature(feature);
+      try {
+        const conversation = await updateConversation(activeConversationKey, {
+          [feature]: enabled,
+        });
+        setConversation(
+          activeConversationKey,
+          toConversationItem(conversation),
+        );
+      } catch (error) {
+        messageApi.error(
+          error instanceof Error ? error.message : '更新会话能力失败',
+        );
+      } finally {
+        setUpdatingFeature(undefined);
+      }
+    },
+    [activeConversationKey, messageApi, setConversation],
+  );
+
   /** 将本轮消息、会话 ID 和当前模型交给 Nest 流式接口。 */
   const handleSubmit = async (value: string, files: File[]) => {
     const content = value.trim() || (files.length ? texts.describeImages : '');
@@ -427,6 +465,15 @@ const Independent: React.FC = () => {
               modelOptions={modelOptions}
               selectedModelId={selectedModelId}
               onModelChange={(modelId) => void handleModelChange(modelId)}
+              thinkingEnabled={activeConversation?.thinkingEnabled ?? true}
+              toolsEnabled={activeConversation?.toolsEnabled ?? true}
+              updatingFeature={updatingFeature}
+              onThinkingChange={(enabled) =>
+                void handleFeatureChange('thinkingEnabled', enabled)
+              }
+              onToolsChange={(enabled) =>
+                void handleFeatureChange('toolsEnabled', enabled)
+              }
               modelsLoading={initializing}
               disabled={chatDisabled}
               onAttachmentError={(error) => void messageApi.error(error)}

@@ -44,11 +44,16 @@ const chatMessageSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-/** 单个会话同时保存会话级模型和完整消息链。 */
+/**
+ * 单个会话同时保存模型、Agent 能力开关和完整消息链。
+ * 两个开关带默认值，以便不迁移旧 JSON 文件也能按升级前的“全部开启”行为读取。
+ */
 const conversationSchema = z.object({
   id: z.string().min(1),
   title: z.string().trim().min(1),
   modelId: z.string().trim().min(1),
+  thinkingEnabled: z.boolean().default(true),
+  toolsEnabled: z.boolean().default(true),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   messages: z.array(chatMessageSchema),
@@ -64,16 +69,28 @@ const conversationStoreSchema = z.object({
 const createConversationSchema = z.object({
   title: z.string().trim().min(1).optional(),
   modelId: z.string().trim().min(1).optional(),
+  thinkingEnabled: z.boolean().optional(),
+  toolsEnabled: z.boolean().optional(),
 });
 
 const updateConversationSchema = z
   .object({
     title: z.string().trim().min(1).optional(),
     modelId: z.string().trim().min(1).optional(),
+    thinkingEnabled: z.boolean().optional(),
+    toolsEnabled: z.boolean().optional(),
   })
-  .refine((value) => value.title !== undefined || value.modelId !== undefined, {
-    message: '至少需要提供 title 或 modelId',
-  });
+  .refine(
+    (value) =>
+      value.title !== undefined ||
+      value.modelId !== undefined ||
+      value.thinkingEnabled !== undefined ||
+      value.toolsEnabled !== undefined,
+    {
+      message:
+        '至少需要提供 title、modelId、thinkingEnabled 或 toolsEnabled',
+    },
+  );
 
 export type ChatMessageRecord = z.infer<typeof chatMessageSchema>;
 export type ChatImageRecord = z.infer<typeof chatImageSchema>;
@@ -143,6 +160,8 @@ export class ConversationsService {
         id: randomUUID(),
         title: input.title ?? '新会话',
         modelId,
+        thinkingEnabled: input.thinkingEnabled ?? true,
+        toolsEnabled: input.toolsEnabled ?? true,
         createdAt: now,
         updatedAt: now,
         messages: [],
@@ -154,7 +173,7 @@ export class ConversationsService {
   }
 
   /**
-   * 更新标题或当前会话模型，并推进侧边栏排序所依赖的 updatedAt。
+   * 更新标题、当前模型或 Agent 能力开关，并推进侧边栏排序所依赖的 updatedAt。
    * 用户选择模型时只改这一条会话，同时把该模型记为未来新会话的继承值。
    */
   async update(id: string, payload: unknown): Promise<ChatConversation> {
@@ -169,6 +188,12 @@ export class ConversationsService {
 
       if (input.title !== undefined) conversation.title = input.title;
       if (input.modelId !== undefined) conversation.modelId = input.modelId;
+      if (input.thinkingEnabled !== undefined) {
+        conversation.thinkingEnabled = input.thinkingEnabled;
+      }
+      if (input.toolsEnabled !== undefined) {
+        conversation.toolsEnabled = input.toolsEnabled;
+      }
       conversation.updatedAt = new Date().toISOString();
       return conversation;
     });

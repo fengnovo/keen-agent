@@ -33,7 +33,7 @@ export class ConversationsController {
     return this.conversationsService.create(body);
   }
 
-  /** 修改会话标题或会话级模型。 */
+  /** 修改会话标题、会话级模型或 Agent 能力开关。 */
   @Patch(':id')
   update(@Param('id') id: string, @Body() body: unknown) {
     return this.conversationsService.update(id, body);

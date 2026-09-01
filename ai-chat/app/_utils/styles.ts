@@ -244,11 +244,20 @@ export const useStyle = createStyles(({ token, css }) => {
     /** 聊天列表样式 */
     chatList: css`
       flex: 1;
-      overflow-y: auto;
+      min-height: 0;
+      overflow: hidden;
       display: flex;
       flex-direction: column;
-      align-items: center;
       width: 100%;
+
+      /*
+       * Bubble.List 的滚动层需要铺满聊天区，这样两侧留白也能响应滚轮；
+       * 仅限制消息内容宽度，保持原有的居中阅读布局。
+       */
+      .ant-bubble-list-scroll-content {
+        max-width: 940px;
+        margin-inline: auto;
+      }
 
       @media (max-width: 767px) {
         padding-top: calc(56px + env(safe-area-inset-top));
@@ -273,8 +282,11 @@ export const useStyle = createStyles(({ token, css }) => {
       aspect-ratio: 4 / 3;
       overflow: hidden;
       border-radius: ${token.borderRadiusLG}px;
+      border: 0;
+      padding: 0;
       background: ${token.colorFillSecondary};
       outline: none;
+      cursor: zoom-in;
 
       img {
         object-fit: contain;

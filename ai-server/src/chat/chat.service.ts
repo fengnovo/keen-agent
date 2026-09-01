@@ -214,35 +214,69 @@ const normalizeOcrText = (value: string): string => {
   return value.trim();
 };
 
-/** OCR 模型只负责完整转录图片文字，理解、推理和作答交给用户选择的主模型。 */
+/** 多图结果使用稳定序号分隔，让主模型能逐张对应用户问题。 */
+const formatImageAnalysis = (
+  analysis: string,
+  index: number,
+  total: number,
+): string => {
+  if (total === 1) return analysis;
+
+  return [
+    `===== 第 ${index + 1} 张图片（共 ${total} 张）OCR 开始 =====`,
+    analysis,
+    `===== 第 ${index + 1} 张图片 OCR 结束 =====`,
+  ].join('\n');
+};
+
+/**
+ * OCR 模型只负责完整转录图片文字，理解、推理和作答交给用户选择的主模型。
+ * 每张图片独立请求，避免兼容端点只返回第一张图片的 OCR；再按上传顺序合并结果。
+ */
 const analyzeImages = async (
   model: ModelConfig,
   images: ChatImageRecord[],
   signal: AbortSignal,
 ): Promise<string> => {
-  const response = await createChatModel(model).invoke(
-    [
-      {
-        role: 'user',
-        // Qwen OCR 不传自定义文本时会使用官方内置的完整文字识别任务。
-        content: images.map((image) => ({
-          type: 'image_url' as const,
-          image_url: { url: image.dataUrl },
-        })),
-      },
-    ],
-    { signal },
-  );
-  const extracted = extractContent(response.content);
-  const rawAnalysis = extracted.content ?? extracted.reasoningContent ?? '';
-  const analysis = normalizeOcrText(rawAnalysis)
-    .slice(0, MAX_IMAGE_ANALYSIS_LENGTH);
-
-  if (!analysis) {
-    throw new Error(`视觉模型 ${model.name} 未返回有效的图片解析结果`);
+  if (images.length === 0) {
+    throw new Error('缺少需要解析的图片');
   }
 
-  return analysis;
+  const chatModel = createChatModel(model);
+  // 为每张图预留相近的缓存空间，避免第一张长文档挤掉后续图片的结果。
+  const labelReserve = images.length === 1 ? 0 : images.length * 100;
+  const perImageLimit = Math.floor(
+    (MAX_IMAGE_ANALYSIS_LENGTH - labelReserve) / images.length,
+  );
+  // 最多三张图并行请求，既保持一图一结果，也避免串行 OCR 挤占主模型的超时预算。
+  const analyses = await Promise.all(
+    images.map(async (image, index) => {
+      const response = await chatModel.invoke(
+        [
+          {
+            role: 'user',
+            // Qwen OCR 不传自定义文本时会使用官方内置的完整文字识别任务。
+            content: [
+              {
+                type: 'image_url' as const,
+                image_url: { url: image.dataUrl },
+              },
+            ],
+          },
+        ],
+        { signal },
+      );
+      const extracted = extractContent(response.content);
+      const rawAnalysis = extracted.content ?? extracted.reasoningContent ?? '';
+      const analysis =
+        normalizeOcrText(rawAnalysis).slice(0, perImageLimit) ||
+        '未识别到可用文字。';
+
+      return formatImageAnalysis(analysis, index, images.length);
+    }),
+  );
+
+  return analyses.join('\n\n').slice(0, MAX_IMAGE_ANALYSIS_LENGTH);
 };
 
 /** 明确标记视觉结果是低权限数据，减少图片提示词注入影响主模型。 */
@@ -353,7 +387,15 @@ export class ChatService {
       return {
         conversation,
         model,
-        agent: model.id === visionModelId ? undefined : createAgent(model),
+        // 能力开关从服务端会话读取，不能由单次聊天请求临时覆盖。
+        // 这样刷新或切换会话后，Agent 行为仍与输入框中显示的状态一致。
+        agent:
+          model.id === visionModelId
+            ? undefined
+            : createAgent(model, {
+                thinkingEnabled: conversation.thinkingEnabled,
+                toolsEnabled: conversation.toolsEnabled,
+              }),
         visionModel,
         visionModelId,
         userMessageId,
@@ -378,24 +420,26 @@ export class ChatService {
       AbortSignal.timeout(60_000),
     ]);
     let reasoningContent = '';
+    const currentUserMessage = prepared.conversation.messages.find(
+      (message) => message.id === prepared.userMessageId,
+    );
 
     if (prepared.visionModel) {
       // 两阶段模式：先完成 OCR 并落盘，再创建交给主 Agent 的文本上下文。
-      const status = `正在使用 ${prepared.visionModel.name} 解析图片…\n`;
+      const imageCount = currentUserMessage?.images?.length ?? 0;
+      const status =
+        `正在使用 ${prepared.visionModel.name} ` +
+        `逐张解析 ${imageCount} 张图片…\n`;
       reasoningContent += status;
       yield { reasoningContent: status };
 
-      const userMessage = prepared.conversation.messages.find(
-        (message) => message.id === prepared.userMessageId,
-      );
-
-      if (!userMessage?.images?.length) {
+      if (!currentUserMessage?.images?.length) {
         throw new Error('找不到本轮需要解析的图片');
       }
 
       const imageAnalysis = await analyzeImages(
         prepared.visionModel,
-        userMessage.images,
+        currentUserMessage.images,
         signal,
       );
       prepared.conversation = await this.conversationsService.setImageAnalysis(
@@ -404,7 +448,9 @@ export class ChatService {
         imageAnalysis,
       );
 
-      const completedStatus = `图片解析完成，正在交给 ${prepared.model.name} 继续回答…\n`;
+      const completedStatus =
+        `${imageCount} 张图片解析完成，` +
+        `正在交给 ${prepared.model.name} 继续回答…\n`;
       reasoningContent += completedStatus;
       yield { reasoningContent: completedStatus };
     }
@@ -417,7 +463,15 @@ export class ChatService {
         message.role === 'user' &&
         message.images?.length
       ) {
-        // 用户主动选择 OCR 模型时保留原图，只运行一次底层视觉模型调用。
+        if (message.imageAnalysis) {
+          // 已识别的历史图片只注入缓存文本，避免后续追问再次消耗 OCR 请求。
+          return {
+            role: message.role,
+            content: withVisionContext(message.content, message.imageAnalysis),
+          };
+        }
+
+        // 本轮未缓存的原图只用于兼容无图片分流的兜底路径。
         return {
           role: message.role,
           content: [
@@ -442,32 +496,45 @@ export class ChatService {
 
     // OCR 模型不支持工具调用；直接调用底层模型，避免 DeepAgent 注入 tools 参数。
     if (!prepared.agent) {
-      const response = await createChatModel(prepared.model).invoke(messages, {
-        signal,
-      });
-      const chunk = extractContent(response.content);
+      let chunk: ChatStreamChunk;
 
-      if (chunk.content) chunk.content = normalizeOcrText(chunk.content);
+      if (currentUserMessage?.images?.length) {
+        // 直接选择 OCR 模型时也必须逐图请求，否则兼容端点可能只返回第一张图。
+        const status =
+          `正在使用 ${prepared.model.name} ` +
+          `逐张解析 ${currentUserMessage.images.length} 张图片…\n`;
+        reasoningContent += status;
+        yield { reasoningContent: status };
+
+        const imageAnalysis = await analyzeImages(
+          prepared.model,
+          currentUserMessage.images,
+          signal,
+        );
+        prepared.conversation =
+          await this.conversationsService.setImageAnalysis(
+            prepared.conversation.id,
+            prepared.userMessageId,
+            imageAnalysis,
+          );
+        const completedStatus = `${currentUserMessage.images.length} 张图片解析完成。\n`;
+        reasoningContent += completedStatus;
+        yield { reasoningContent: completedStatus };
+        chunk = { content: imageAnalysis };
+      } else {
+        const response = await createChatModel(prepared.model).invoke(messages, {
+          signal,
+        });
+        chunk = extractContent(response.content);
+
+        if (chunk.content) chunk.content = normalizeOcrText(chunk.content);
+      }
 
       if (!chunk.content && !chunk.reasoningContent) {
         throw new Error(`模型 ${prepared.model.name} 未返回有效内容`);
       }
 
-      if (chunk.content) {
-        const currentUserMessage = prepared.conversation.messages.find(
-          (message) => message.id === prepared.userMessageId,
-        );
-
-        if (currentUserMessage?.images?.length) {
-          // 即使用户直接选择 OCR，也缓存纯文本，便于之后切换主模型继续追问。
-          prepared.conversation =
-            await this.conversationsService.setImageAnalysis(
-              prepared.conversation.id,
-              prepared.userMessageId,
-              chunk.content,
-            );
-        }
-      }
+      if (chunk.reasoningContent) reasoningContent += chunk.reasoningContent;
 
       yield chunk;
 
@@ -475,7 +542,7 @@ export class ChatService {
         await this.conversationsService.appendAssistantMessage(
           prepared.conversation.id,
           chunk.content ?? '',
-          chunk.reasoningContent,
+          reasoningContent || undefined,
         );
       }
       return;

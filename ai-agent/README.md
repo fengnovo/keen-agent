@@ -55,7 +55,7 @@ Web 与命令行共用 `.keen-agent/models.json`，但会话历史相互独立�
 
 ### 主 Agent
 
-`createAgent(config)` 在底层模型之上创建 DeepAgent，并注入：
+`createAgent(config, features)` 在底层模型之上创建 DeepAgent，并注入：
 
 - 统一中文系统提示词；
 - 当前模型身份；
@@ -63,7 +63,13 @@ Web 与命令行共用 `.keen-agent/models.json`，但会话历史相互独立�
 - `tiandi_tongshou` 示例工具；
 - `MemorySaver` 内存检查点。
 
-命令行聊天和 Web 的主模型回答都使用这个工厂。Web 每次请求会创建临时线程并注入服务端完整历史；命令行则在进程内持续复用同一线程。
+`features` 支持两个可选开关，省略时都默认为 `true`，因此命令行入口保持原有行为：
+
+- `thinkingEnabled`：选择“充分分析”或“优先直接回答”的系统提示策略。
+- `toolsEnabled`：为 `true` 时注册工具，为 `false` 时给 DeepAgent 传入空工具列表。
+
+命令行聊天和 Web 的主模型回答都使用这个工厂。Web 会从当前会话读取上述开关，每次请求
+创建临时线程并注入服务端完整历史；命令行则在进程内持续复用同一线程。
 
 ## 图片双模型流程
 

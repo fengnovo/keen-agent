@@ -22,6 +22,10 @@ export interface ChatConversation {
   id: string;
   title: string;
   modelId: string;
+  /** 是否要求主 Agent 在回答前进行更充分的分析。 */
+  thinkingEnabled: boolean;
+  /** 是否向主 Agent 注册当前项目提供的工具。 */
+  toolsEnabled: boolean;
   createdAt: string;
   updatedAt: string;
   messages: ConversationMessage[];
@@ -92,16 +96,23 @@ export const getConversation = (id: string) =>
 export const createConversation = (input?: {
   title?: string;
   modelId?: string;
+  thinkingEnabled?: boolean;
+  toolsEnabled?: boolean;
 }) =>
   request<ChatConversation>('', {
     method: 'POST',
     body: JSON.stringify(input ?? {}),
   });
 
-/** 更新会话标题或该会话绑定的模型。 */
+/** 更新会话标题、绑定模型或 Agent 能力开关。 */
 export const updateConversation = (
   id: string,
-  input: { title?: string; modelId?: string },
+  input: {
+    title?: string;
+    modelId?: string;
+    thinkingEnabled?: boolean;
+    toolsEnabled?: boolean;
+  },
 ) =>
   request<ChatConversation>(`/${encodeURIComponent(id)}`, {
     method: 'PATCH',
