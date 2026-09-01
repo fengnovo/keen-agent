@@ -1,6 +1,6 @@
 # Keen Agent AI Server
 
-Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent 共用同一份模型配置。Web 聊天会话保存在 `.keen-agent/chat-conversations.json`。
+Nest API 直接读写根目录 `.keen-agent/models.json` 和 `.keen-agent/plugins.json`，与命令行 Agent 共用模型及插件配置。Web 聊天会话保存在 `.keen-agent/chat-conversations.json`。
 
 默认地址为 `http://127.0.0.1:3001/api`，可使用以下环境变量覆盖：
 
@@ -8,6 +8,7 @@ Nest API 直接读写根目录 `.keen-agent/models.json`，与命令行 Agent �
 - `AI_SERVER_HOST`：监听地址，默认 `127.0.0.1`
 - `AI_CHAT_ORIGIN`：允许跨域访问的前端来源，多个来源以逗号分隔
 - `MODEL_CONFIG_PATH`：模型配置文件路径，主要用于测试或自定义部署
+- `PLUGIN_CONFIG_PATH`：插件配置文件路径，主要用于测试或自定义部署
 - `CHAT_CONVERSATIONS_PATH`：Web 会话文件路径，主要用于测试或自定义部署
 - `VISION_MODEL_ID`：内部图片解析模型的模型配置 ID，默认 `qwen3.5-ocr`
 
@@ -36,10 +37,23 @@ Base URL。视觉模型的默认配置 ID 应为 `qwen3.5-ocr`；使用其他 ID
 
 每条 Web 会话会额外保存 `thinkingEnabled` 和 `toolsEnabled`。旧会话读取时默认补为
 `true`，不需要手动迁移会话文件。`PATCH /api/conversations/:id` 可以修改这两个字段；
-下一轮聊天准备阶段会把它们传给 `ai-agent` 的 `createAgent`。
+下一轮聊天准备阶段会把它们传给 `ai-agent` 的 `createAgentRuntime`。
 
-`thinkingEnabled` 控制回答策略提示，`toolsEnabled` 控制 DeepAgent 是否注册工具。直接选择
+`thinkingEnabled` 控制回答策略提示，`toolsEnabled` 是全部插件的会话级总开关。关闭时运行时使用不带工具的普通 Agent，避免 DeepAgent 隐式提供内置工具。直接选择
 OCR 模型时服务端绕过 DeepAgent，所以开关只会保存，不影响该次 OCR 直连请求。
+
+## 插件运行时
+
+`PluginsService` 提供插件注册表 CRUD、启停和连接测试。聊天准备阶段会读取一份注册表快照：
+
+1. 本地工具通过源码中的实现目录解析。
+2. 已启用 MCP 通过官方 LangChain MCP Adapter 加载工具，并在流结束或取消时关闭连接。
+3. Skill 默认从 `ai-agent/.skills/` 解析，校验 `SKILL.md` 元数据及目录名后，把完整目录映射到内存 StateBackend；不会跟随符号链接，也不会自动执行其中的脚本。
+4. `deepagent-core` 开启时创建 DeepAgent，关闭时退回普通 LangChain Agent。
+
+插件管理可以启动本地 MCP 进程并读取 Skill 文件，属于管理员能力。面向公网部署时应在反向代理或应用鉴权层保护 `/api/plugins`，不要开放给普通聊天用户。
+
+MCP 的真实环境变量值只在 AI Server 进程内解析，API 返回和 JSON 文件中都只有变量名称。
 
 ## API
 
@@ -49,6 +63,13 @@ OCR 模型时服务端绕过 DeepAgent，所以开关只会保存，不影响该
 - `PUT /api/models/:id`
 - `DELETE /api/models/:id`
 - `PATCH /api/models/:id/active`
+- `GET /api/plugins`
+- `GET /api/plugins/:id`
+- `POST /api/plugins`
+- `PUT /api/plugins/:id`
+- `PATCH /api/plugins/:id/enabled`
+- `POST /api/plugins/:id/test`
+- `DELETE /api/plugins/:id`
 - `GET /api/conversations`
 - `GET /api/conversations/:id`
 - `POST /api/conversations`

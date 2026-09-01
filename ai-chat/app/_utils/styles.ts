@@ -162,6 +162,9 @@ export const useStyle = createStyles(({ token, css }) => {
     modelManagerEntry: css`
       flex: none;
       padding: 12px 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
 
       .ant-btn {
         color: ${token.colorTextSecondary};

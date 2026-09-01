@@ -10,6 +10,7 @@ import { Button, Input, Modal } from 'antd';
 import { Conversations } from '@ant-design/x';
 import type { ConversationData } from '@ant-design/x-sdk';
 import {
+  AppstoreOutlined,
   DeleteOutlined,
   EditOutlined,
   MenuFoldOutlined,
@@ -24,6 +25,12 @@ import type { ModelRegistry } from '../_utils/model-api';
 const ModelManagerModal = dynamic(
   () =>
     import('./ModelManagerModal').then((module) => module.ModelManagerModal),
+  { ssr: false },
+);
+
+const PluginManagerModal = dynamic(
+  () =>
+    import('./PluginManagerModal').then((module) => module.PluginManagerModal),
   { ssr: false },
 );
 
@@ -79,6 +86,7 @@ export const ChatSide: React.FC<ChatSideProps> = ({
   );
   const [resizing, setResizing] = useState(false);
   const [modelManagerOpen, setModelManagerOpen] = useState(false);
+  const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
   const [conversationOperation, setConversationOperation] = useState('');
   const [renamingConversation, setRenamingConversation] =
     useState<ConversationData>();
@@ -311,7 +319,7 @@ export const ChatSide: React.FC<ChatSideProps> = ({
         />
       )}
 
-      {/* AI Agent 模型管理 */}
+      {/* 模型与插件都是全局 Agent 配置，入口并列放在侧栏底部。 */}
       <div className={styles.modelManagerEntry}>
         <Button
           block={!collapsed}
@@ -324,6 +332,17 @@ export const ChatSide: React.FC<ChatSideProps> = ({
         >
           {!collapsed && texts.modelManagement}
         </Button>
+        <Button
+          block={!collapsed}
+          type='text'
+          shape={collapsed ? 'circle' : 'default'}
+          icon={<AppstoreOutlined />}
+          title={texts.pluginManagement}
+          aria-label={texts.pluginManagement}
+          onClick={() => setPluginManagerOpen(true)}
+        >
+          {!collapsed && texts.pluginManagement}
+        </Button>
       </div>
 
       {modelManagerOpen ? (
@@ -331,6 +350,13 @@ export const ChatSide: React.FC<ChatSideProps> = ({
           open
           onClose={() => setModelManagerOpen(false)}
           onRegistryChange={onModelRegistryChange}
+        />
+      ) : null}
+
+      {pluginManagerOpen ? (
+        <PluginManagerModal
+          open
+          onClose={() => setPluginManagerOpen(false)}
         />
       ) : null}
 

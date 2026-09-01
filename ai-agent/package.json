@@ -20,18 +20,27 @@
   "packageManager": "pnpm@11.24.0",
   "type": "module",
   "exports": {
-    "./agent": "./src/agent.ts",
-    "./model-config": "./src/model-config.ts"
+    ".": "./src/core/index.ts",
+    "./core": "./src/core/index.ts",
+    "./config": "./src/config/index.ts",
+    "./plugins": "./src/plugins/index.ts",
+    "./cli": "./src/cli/index.ts",
+    "./agent": "./src/core/agent.ts",
+    "./model-config": "./src/config/model-config.ts",
+    "./plugin-config": "./src/config/plugin-config.ts",
+    "./plugin-runtime": "./src/plugins/runtime.ts"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.7.0",
     "@langchain/anthropic": "^1.5.8",
     "@langchain/core": "^1.2.9",
     "@langchain/langgraph-checkpoint": "^1.1.5",
+    "@langchain/mcp-adapters": "^1.1.4",
     "@langchain/openai": "^1.5.10",
     "chalk": "^6.0.0",
     "deepagents": "^1.13.2",
     "dotenv": "^17.4.2",
+    "langchain": "^1.5.10",
     "zod": "^4.5.4"
   }
 }

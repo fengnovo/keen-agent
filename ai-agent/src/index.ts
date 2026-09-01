@@ -5,7 +5,7 @@
  * 功能说明：
  * 1. 启动程序后，通过命令行与 AI Agent 进行持续多轮对话。
  * 2. 实时展示模型的思考过程、工具调用详情与最终回答。
- * 3. 支持使用「天地同寿算法」自定义工具进行数值计算。
+ * 3. 按共享插件注册表装配 DeepAgent 内置能力、本地工具、MCP 与 Skills。
  * 4. 输入 /model 可在运行时查看并切换本地配置的模型。
  * 5. 输入 exit、quit 或 退出 即可结束会话。
  *
@@ -16,7 +16,7 @@
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'node:url';
 
-import { runConversation } from './conversation.ts';
+import { runConversation } from './cli/conversation.ts';
 
 // ---------- 1. 环境变量配置 ----------
 dotenv.config({

@@ -6,8 +6,9 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
-  createAgent,
+  createAgentRuntime,
   createChatModel,
+  type AgentRuntime,
 } from '@keen-agent/ai-agent/agent';
 import type { ModelConfig } from '@keen-agent/ai-agent/model-config';
 import { z } from 'zod';
@@ -18,6 +19,7 @@ import {
   type ChatImageRecord,
 } from '../conversations/conversations.service.js';
 import { ModelsService } from '../models/models.service.js';
+import { PluginsService } from '../plugins/plugins.service.js';
 
 const SUPPORTED_IMAGE_TYPES = [
   'image/jpeg',
@@ -101,7 +103,7 @@ interface PreparedChat {
   /** 用户在当前会话中选择的最终回答模型。 */
   model: ModelConfig;
   /** OCR 模型不支持工具调用，因此直接调用时不创建 Agent。 */
-  agent?: ReturnType<typeof createAgent>;
+  agentRuntime?: AgentRuntime;
   /** 仅在“本轮有图片且最终模型不是视觉模型”时设置。 */
   visionModel?: ModelConfig;
   visionModelId: string;
@@ -303,6 +305,7 @@ const assertVisionModelProtocol = (model: ModelConfig): void => {
 export class ChatService {
   constructor(
     private readonly modelsService: ModelsService,
+    private readonly pluginsService: PluginsService,
     private readonly conversationsService: ConversationsService,
   ) {}
 
@@ -341,7 +344,10 @@ export class ChatService {
       result.data.conversationId,
     );
     const modelId = result.data.model ?? conversation.modelId;
-    const modelRegistry = await this.modelsService.list();
+    const [modelRegistry, pluginRegistry] = await Promise.all([
+      this.modelsService.list(),
+      this.pluginsService.list(),
+    ]);
     const model = modelRegistry.models.find((item) => item.id === modelId);
 
     if (!model) {
@@ -389,12 +395,13 @@ export class ChatService {
         model,
         // 能力开关从服务端会话读取，不能由单次聊天请求临时覆盖。
         // 这样刷新或切换会话后，Agent 行为仍与输入框中显示的状态一致。
-        agent:
+        agentRuntime:
           model.id === visionModelId
             ? undefined
-            : createAgent(model, {
+            : await createAgentRuntime(model, {
                 thinkingEnabled: conversation.thinkingEnabled,
                 toolsEnabled: conversation.toolsEnabled,
+                pluginRegistry,
               }),
         visionModel,
         visionModelId,
@@ -412,6 +419,19 @@ export class ChatService {
    * 浏览器断开或 60 秒超时都会中止底层模型调用；完整输出仅在正常结束后保存。
    */
   async *stream(
+    prepared: PreparedChat,
+    clientSignal: AbortSignal,
+  ): AsyncGenerator<ChatStreamChunk> {
+    try {
+      yield* this.runStream(prepared, clientSignal);
+    } finally {
+      // stdio 子进程和 HTTP MCP 会话都属于本轮 Agent，流结束或取消后必须释放。
+      await prepared.agentRuntime?.close().catch(() => undefined);
+    }
+  }
+
+  /** 执行聊天编排；资源生命周期由外层 stream 统一管理。 */
+  private async *runStream(
     prepared: PreparedChat,
     clientSignal: AbortSignal,
   ): AsyncGenerator<ChatStreamChunk> {
@@ -495,7 +515,7 @@ export class ChatService {
     });
 
     // OCR 模型不支持工具调用；直接调用底层模型，避免 DeepAgent 注入 tools 参数。
-    if (!prepared.agent) {
+    if (!prepared.agentRuntime) {
       let chunk: ChatStreamChunk;
 
       if (currentUserMessage?.images?.length) {
@@ -548,8 +568,13 @@ export class ChatService {
       return;
     }
 
-    const stream = await prepared.agent.stream(
-      { messages },
+    const stream = await prepared.agentRuntime.agent.stream(
+      {
+        messages,
+        ...(prepared.agentRuntime.skillFiles
+          ? { files: prepared.agentRuntime.skillFiles }
+          : {}),
+      },
       {
         configurable: { thread_id: randomUUID() },
         streamMode: ['messages', 'tools'],

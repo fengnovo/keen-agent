@@ -7,6 +7,8 @@ import { ConversationsController } from './conversations/conversations.controlle
 import { ConversationsService } from './conversations/conversations.service.js';
 import { ModelsController } from './models/models.controller.js';
 import { ModelsService } from './models/models.service.js';
+import { PluginsController } from './plugins/plugins.controller.js';
+import { PluginsService } from './plugins/plugins.service.js';
 
 /**
  * AI Server 根模块：模型配置、Web 会话和聊天流共享同一个 ModelsService。
@@ -15,9 +17,15 @@ import { ModelsService } from './models/models.service.js';
   controllers: [
     HealthController,
     ModelsController,
+    PluginsController,
     ConversationsController,
     ChatController,
   ],
-  providers: [ModelsService, ConversationsService, ChatService],
+  providers: [
+    ModelsService,
+    PluginsService,
+    ConversationsService,
+    ChatService,
+  ],
 })
 export class AppModule {}

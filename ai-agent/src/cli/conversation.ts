@@ -7,7 +7,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { select } from '@inquirer/prompts';
 import { isBaseMessage } from '@langchain/core/messages';
 
-import { createAgent } from './agent.ts';
+import { createAgentRuntime } from '../core/agent.ts';
 import {
   CONVERSATION_FILE,
   loadConversationHistory,
@@ -22,14 +22,14 @@ import {
   withActiveModel,
   type ModelConfig,
   type ModelRegistry,
-} from './model-config.ts';
+} from '../config/model-config.ts';
 import {
   createLoading,
   formatValue,
   resetMessageSection,
   terminalColor,
   writeMessageChunk,
-} from './util.ts';
+} from './terminal.ts';
 
 // 加载动画实例：用于在等待模型响应时展示动态进度
 const loading = createLoading();
@@ -152,7 +152,8 @@ export const runConversation = async () => {
   const loadedModelRegistry = await loadModelRegistry();
   let modelRegistry = loadedModelRegistry.registry;
   let activeModel = getActiveModel(modelRegistry);
-  let agent = createAgent(activeModel);
+  let agentRuntime = await createAgentRuntime(activeModel);
+  let agent = agentRuntime.agent;
 
   // 每次启动使用新的内存线程，并在首次请求时注入磁盘中恢复的历史消息
   let threadId = randomUUID();
@@ -185,6 +186,7 @@ export const runConversation = async () => {
       userInput === '退出';
 
     if (isExit) {
+      await agentRuntime.close().catch(() => undefined);
       console.log('对话已结束，再见！');
       break;
     }
@@ -256,9 +258,13 @@ export const runConversation = async () => {
         continue;
       }
 
+      let nextAgentRuntime:
+        | Awaited<ReturnType<typeof createAgentRuntime>>
+        | undefined;
+
       try {
         // 先验证新模型环境配置，再持久化选择并替换运行中的 Agent
-        const nextAgent = createAgent(selectedModel);
+        nextAgentRuntime = await createAgentRuntime(selectedModel);
         const nextRestoredMessages = await loadConversationHistory();
         const nextRegistry = withActiveModel(
           modelRegistry,
@@ -266,7 +272,10 @@ export const runConversation = async () => {
         );
         await saveModelRegistry(nextRegistry);
 
-        agent = nextAgent;
+        await agentRuntime.close().catch(() => undefined);
+        agentRuntime = nextAgentRuntime;
+        agent = nextAgentRuntime.agent;
+        nextAgentRuntime = undefined;
         activeModel = selectedModel;
         modelRegistry = nextRegistry;
         threadId = randomUUID();
@@ -278,6 +287,7 @@ export const runConversation = async () => {
           ),
         );
       } catch (error) {
+        await nextAgentRuntime?.close().catch(() => undefined);
         const message =
           error instanceof Error ? error.message : formatValue(error);
         console.error(
@@ -300,6 +310,9 @@ export const runConversation = async () => {
       const stream = await agent.stream(
         {
           messages,
+          ...(agentRuntime.skillFiles
+            ? { files: agentRuntime.skillFiles }
+            : {}),
         },
         {
           configurable: { thread_id: threadId },
@@ -309,13 +322,16 @@ export const runConversation = async () => {
         },
       );
 
-      for await (const [mode, payload] of stream) {
+      for await (const event of stream) {
+        if (!Array.isArray(event) || event.length < 2) continue;
+        const [mode, payload] = event;
         loading.stop();
 
         // mode 为 'messages'：模型返回的消息
         if (mode === 'messages') {
+          if (!Array.isArray(payload)) continue;
           const [message] = payload;
-          if (message.getType() !== 'ai') continue;
+          if (!isBaseMessage(message) || message.getType() !== 'ai') continue;
 
           printAiMessage(message);
           continue;

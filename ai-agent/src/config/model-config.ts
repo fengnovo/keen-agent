@@ -1,7 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
+
+import { LOCAL_STATE_ROOT } from './paths.ts';
 
 const MODEL_CONFIG_VERSION = 1;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -63,9 +64,7 @@ export interface LoadedModelRegistry {
   created: boolean;
 }
 
-export const MODEL_CONFIG_FILE = fileURLToPath(
-  new URL('../../.keen-agent/models.json', import.meta.url),
-);
+export const MODEL_CONFIG_FILE = join(LOCAL_STATE_ROOT, 'models.json');
 
 export const formatModelValidationError = (error: z.ZodError): string =>
   error.issues

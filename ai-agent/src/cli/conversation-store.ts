@@ -1,6 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import {
   mapChatMessagesToStoredMessages,
   mapStoredMessagesToChatMessages,
@@ -8,13 +7,16 @@ import {
   type StoredMessage,
 } from '@langchain/core/messages';
 
+import { LOCAL_STATE_ROOT } from '../config/paths.ts';
+
 const HISTORY_VERSION = 1;
 const LEGACY_TOOL_NAMES: Readonly<Record<string, string>> = {
   天地同寿算法: 'tiandi_tongshou',
 };
 
-export const CONVERSATION_FILE = fileURLToPath(
-  new URL('../../.keen-agent/conversation.json', import.meta.url),
+export const CONVERSATION_FILE = join(
+  LOCAL_STATE_ROOT,
+  'conversation.json',
 );
 
 interface StoredConversation {

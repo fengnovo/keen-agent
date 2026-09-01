@@ -9,6 +9,7 @@
 - 为每个会话独立保存“深度思考”和“工具调用”开关。
 - 展示模型正式回答、思考过程和 Markdown 代码块。
 - 管理 Anthropic 兼容与 OpenAI 兼容的模型配置。
+- 管理 DeepAgent 系统工具、本地工具、MCP 服务和 Skills 插件。
 - 点击输入框纸夹直接打开系统文件选择器，也支持拖拽和粘贴图片。
 - 在请求期间取消生成，并在结束后刷新会话标题与排序。
 
@@ -32,9 +33,11 @@
 | `app/_components/ChatSender.tsx` | 输入框、图片附件、模型下拉框和取消请求 |
 | `app/_components/ChatList.tsx` | 用户与助手消息列表 |
 | `app/_components/ModelManagerModal.tsx` | 模型注册表的增删改查界面 |
+| `app/_components/PluginManagerModal.tsx` | 插件分类、启停、测试和 MCP/Skill 编辑界面 |
 | `app/_utils/provider.tsx` | Ant Design X Provider、SSE 请求和 Markdown 渲染 |
 | `app/_utils/conversation-api.ts` | 会话 API 客户端 |
 | `app/_utils/model-api.ts` | 模型管理 API 客户端 |
+| `app/_utils/plugin-api.ts` | 插件管理 API 客户端 |
 | `app/_utils/image.ts` | 图片类型、数量、大小校验与 Data URL 转换 |
 | `next.config.ts` | Nest 同源代理和请求体大小配置 |
 
@@ -46,11 +49,27 @@ Nest 恢复。新会话和没有这两个字段的旧会话默认都开启这两
 
 - 深度思考：切换主 Agent 的回答策略提示。关闭时要求模型优先直接回答；模型服务是否
   仍返回原生 reasoning 字段，最终取决于该模型和上游接口。
-- 工具调用：控制是否向 DeepAgent 注册项目已有工具。关闭时不仅修改提示词，也不会向
-  模型发送工具定义。
+- 工具调用：当前会话的插件总开关。关闭时不会连接 MCP、读取 Skill 或向模型发送任何
+  工具定义；DeepAgent 内置工具也会一并移除。
 
 直接选择 `qwen3.5-ocr` 时不会创建 DeepAgent，因此这两个开关会继续随会话保存，但只在
 之后切换到主模型时生效。
+
+## 插件管理
+
+侧栏底部“模型管理”旁边提供“插件管理”入口。页面按系统工具、MCP 和 Skills 分类：
+
+- DeepAgent 内置工具和项目内置工具可以启停，但不能删除。
+- MCP 支持 stdio 与 Streamable HTTP，可以配置命令、参数、服务地址和超时；stdio 的相对工作目录以 `ai-agent/.mcp/<插件 ID>/` 为基准。
+- MCP 鉴权只填写环境变量名称，不在浏览器或 `.keen-agent/plugins.json` 中保存密钥。
+- Skill 默认放在 `ai-agent/.skills/<name>/`，路径可以只填写 Skill 名称，也可以填写 `SKILL.md` 或目录的仓库相对路径；目录名称必须与 frontmatter 中的 `name` 一致。整个目录会映射到 Agent 的内存文件系统。
+- 每个插件都可以先执行“测试”，确认系统能力、MCP 工具列表或 Skill 元数据及资源文件可读取。
+
+Skill 的脚本和资源可被 Agent 读取，但默认不会授予宿主机 shell 执行权限。依赖 `/mnt`、外部 Skill 或特定沙箱工具的第三方 Skill 需要先适配当前运行环境。
+
+插件管理可以启动本地 MCP 进程并读取 Skill 文件，属于管理员能力；面向公网部署时需要为插件管理 API 增加鉴权或访问控制。
+
+管理页的全局启用状态与会话“工具调用”总开关共同决定下一轮 Agent 的实际能力；修改后无需重启 Web 服务。
 
 ## 图片问答流程
 
