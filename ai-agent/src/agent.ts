@@ -5,6 +5,7 @@ import { createDeepAgent } from 'deepagents';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { tool } from '@langchain/core/tools';
 import { MemorySaver } from '@langchain/langgraph-checkpoint';
+import { ChatOpenAI } from '@langchain/openai';
 import { z } from 'zod';
 
 import { resolveModelConfig, type ModelConfig } from './model-config.ts';
@@ -32,10 +33,31 @@ const myCustomTool = tool(({ a, b }) => Number(a) + Number(b) + 100, {
   }),
 });
 
-/** 创建可复用的底层聊天模型，供主 Agent 和视觉预处理共享配置解析。 */
-export const createChatModel = (config: ModelConfig): ChatAnthropic => {
+/**
+ * 创建不带工具和 Agent 循环的底层聊天模型。
+ * Nest 的 OCR 预处理和 DeepAgent 主模型共用这里，确保环境变量解析与超时配置一致。
+ */
+export const createChatModel = (
+  config: ModelConfig,
+): ChatAnthropic | ChatOpenAI => {
   const resolvedConfig = resolveModelConfig(config);
 
+  if (resolvedConfig.provider === 'openai') {
+    // 阿里云 Qwen OCR 等模型通过 OpenAI 兼容的 chat/completions 接口调用。
+    return new ChatOpenAI({
+      temperature: resolvedConfig.temperature,
+      model: resolvedConfig.model,
+      apiKey: resolvedConfig.apiKey,
+      maxRetries: resolvedConfig.maxRetries,
+      maxTokens: resolvedConfig.maxTokens,
+      timeout: resolvedConfig.timeoutMs,
+      configuration: {
+        baseURL: resolvedConfig.baseURL,
+      },
+    });
+  }
+
+  // DeepSeek 等当前主模型通过 Anthropic 兼容 Messages 接口调用。
   return new ChatAnthropic({
     temperature: resolvedConfig.temperature,
     model: resolvedConfig.model,
@@ -52,6 +74,7 @@ export const createChatModel = (config: ModelConfig): ChatAnthropic => {
 /**
  * 创建 DeepAgent 实例
  * API Key 与可选的 Base URL 通过模型配置中声明的环境变量读取
+ * 这里只负责需要工具循环的主模型；OCR 模型由 ai-server 直接调用底层聊天模型。
  */
 export const createAgent = (
   config: ModelConfig,

@@ -9,6 +9,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Select,
   Space,
   Table,
   Tooltip,
@@ -353,7 +354,13 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
           </Form.Item>
 
           <Form.Item label='Provider' name='provider'>
-            <Input disabled />
+            {/* Provider 表示上游 API 兼容协议，不等同于模型厂商名称。 */}
+            <Select
+              options={[
+                { label: 'Anthropic 兼容', value: 'anthropic' },
+                { label: 'OpenAI 兼容', value: 'openai' },
+              ]}
+            />
           </Form.Item>
 
           <Form.Item

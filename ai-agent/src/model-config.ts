@@ -9,7 +9,8 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const modelConfigSchema = z.object({
   id: z.string().trim().min(1),
   name: z.string().trim().min(1),
-  provider: z.literal('anthropic'),
+  // provider 表示兼容协议而非模型厂商，用于选择对应的 LangChain 客户端。
+  provider: z.enum(['anthropic', 'openai']),
   model: z.string().trim().min(1),
   apiKeyEnv: z.string().regex(ENV_NAME_PATTERN),
   baseUrl: z.string().url().optional(),
@@ -87,6 +88,7 @@ const createDefaultModelRegistry = (): ModelRegistry => {
     activeModelId: model,
     models: [
       {
+        // 自动生成配置沿用项目最初的 Anthropic 兼容环境变量约定。
         id: model,
         name: model,
         provider: 'anthropic',
@@ -185,7 +187,7 @@ export const withActiveModel = (
     activeModelId,
   });
 
-/** 将环境变量引用解析为 ChatAnthropic 可直接使用的配置。 */
+/** 解析 API Key 和 Base URL；调用方再根据 provider 创建具体模型客户端。 */
 export const resolveModelConfig = (
   config: ModelConfig,
 ): ResolvedModelConfig => {

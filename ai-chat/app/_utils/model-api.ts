@@ -1,7 +1,8 @@
 export interface ModelConfig {
   id: string;
   name: string;
-  provider: 'anthropic';
+  /** 上游 API 兼容协议；服务端据此选择 LangChain 客户端。 */
+  provider: 'anthropic' | 'openai';
   model: string;
   apiKeyEnv: string;
   baseUrl?: string;
