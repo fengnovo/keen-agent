@@ -139,7 +139,13 @@ export class PluginsService {
   }
 
   async test(id: string): Promise<PluginTestResult> {
-    return testPlugin(await this.get(id));
+    try {
+      return await testPlugin(await this.get(id));
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : '插件测试失败',
+      );
+    }
   }
 
   private parsePlugin(payload: unknown): PluginConfig {

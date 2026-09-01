@@ -20,6 +20,8 @@ import {
 } from '../conversations/conversations.service.js';
 import { ModelsService } from '../models/models.service.js';
 import { PluginsService } from '../plugins/plugins.service.js';
+import { ArtifactsService } from '../artifacts/artifacts.service.js';
+import { PreviewsService } from '../previews/previews.service.js';
 
 const SUPPORTED_IMAGE_TYPES = [
   'image/jpeg',
@@ -34,6 +36,16 @@ const MAX_IMAGE_ANALYSIS_LENGTH = 20_000;
 const DEFAULT_VISION_MODEL_ID = 'qwen3.5-ocr';
 const IMAGE_DATA_URL_PATTERN =
   /^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
+const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60_000;
+
+const getAgentTimeoutMs = (): number => {
+  const value = Number(
+    process.env.AI_AGENT_TIMEOUT_MS || DEFAULT_AGENT_TIMEOUT_MS,
+  );
+  return Number.isInteger(value) && value >= 10_000 && value <= 30 * 60_000
+    ? value
+    : DEFAULT_AGENT_TIMEOUT_MS;
+};
 
 /** 服务端不信任浏览器校验，重新核对 MIME、base64 和实际解码尺寸。 */
 const requestImageSchema = z
@@ -307,6 +319,8 @@ export class ChatService {
     private readonly modelsService: ModelsService,
     private readonly pluginsService: PluginsService,
     private readonly conversationsService: ConversationsService,
+    private readonly artifactsService: ArtifactsService,
+    private readonly previewsService: PreviewsService,
   ) {}
 
   /**
@@ -402,6 +416,24 @@ export class ChatService {
                 thinkingEnabled: conversation.thinkingEnabled,
                 toolsEnabled: conversation.toolsEnabled,
                 pluginRegistry,
+                sandbox: {
+                  sessionId: `${conversation.id}-${userMessageId}`,
+                  image:
+                    process.env.DOCKER_SANDBOX_IMAGE?.trim() || undefined,
+                  commandTimeoutMs: Number(
+                    process.env.DOCKER_SANDBOX_COMMAND_TIMEOUT_MS,
+                  ) || undefined,
+                  publishArtifact: (artifact) =>
+                    this.artifactsService.publish(
+                      artifact,
+                      conversation.id,
+                    ),
+                  publishPreview: (preview) =>
+                    this.previewsService.publish(
+                      preview,
+                      conversation.id,
+                    ),
+                },
               }),
         visionModel,
         visionModelId,
@@ -416,7 +448,7 @@ export class ChatService {
 
   /**
    * 使用一次性的内存线程运行 Agent，并逐块产出回答。
-   * 浏览器断开或 60 秒超时都会中止底层模型调用；完整输出仅在正常结束后保存。
+   * 浏览器断开或整轮超时都会中止底层模型调用；完整输出仅在正常结束后保存。
    */
   async *stream(
     prepared: PreparedChat,
@@ -437,7 +469,7 @@ export class ChatService {
   ): AsyncGenerator<ChatStreamChunk> {
     const signal = AbortSignal.any([
       clientSignal,
-      AbortSignal.timeout(60_000),
+      AbortSignal.timeout(getAgentTimeoutMs()),
     ]);
     let reasoningContent = '';
     const currentUserMessage = prepared.conversation.messages.find(
@@ -607,6 +639,70 @@ export class ChatService {
       if (chunk.reasoningContent) reasoningContent += chunk.reasoningContent;
 
       if (chunk.content || chunk.reasoningContent) yield chunk;
+    }
+
+    if (prepared.agentRuntime.pluginWarnings.length > 0) {
+      const warningSection = [
+        '',
+        '',
+        '> 插件降级提醒：',
+        ...prepared.agentRuntime.pluginWarnings.map(
+          (warning) => `> - ${warning.replace(/\r?\n/g, ' ')}`,
+        ),
+      ].join('\n');
+      content += warningSection;
+      yield { content: warningSection };
+    }
+
+    // Docker 沙箱只发布 outputs 下的普通文件；链接由服务端生成，不依赖模型自行拼接。
+    // 必须在外层 stream finally 关闭沙箱之前完成复制，否则临时源文件会被删除。
+    try {
+      const artifacts = await prepared.agentRuntime.collectArtifacts();
+      if (artifacts.length > 0) {
+        const artifactSection = [
+          '',
+          '',
+          '### 生成的文件',
+          '',
+          ...artifacts.map(
+            (artifact) =>
+              `- [下载 ${artifact.name.replace(/[\[\]]/g, '\\$&')}](${artifact.url})（${Math.max(1, Math.ceil(artifact.size / 1024))} KB）`,
+          ),
+        ].join('\n');
+        content += artifactSection;
+        yield { content: artifactSection };
+      }
+    } catch (error) {
+      // 发布失败不丢弃已经完成的模型回答，同时明确告知用户没有可用下载链接。
+      const message =
+        error instanceof Error ? error.message : '未知产物发布错误';
+      const artifactError = `\n\n> 产物发布失败：${message}`;
+      content += artifactError;
+      yield { content: artifactError };
+    }
+
+    try {
+      const previews = await prepared.agentRuntime.collectPreviews();
+      if (previews.length > 0) {
+        const previewSection = [
+          '',
+          '',
+          '### 生成的页面',
+          '',
+          ...previews.map(
+            (preview) =>
+              `[在线预览：${preview.name.replace(/[\[\]]/g, '\\$&')}](${preview.url})`,
+          ),
+        ].join('\n\n');
+        content += previewSection;
+        yield { content: previewSection };
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : '未知页面发布错误';
+      const previewError = `\n\n> 页面预览发布失败：${message}`;
+      content += previewError;
+      yield { content: previewError };
     }
 
     // 取消的回答可能不完整，不写入可恢复的服务端历史。

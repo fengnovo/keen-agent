@@ -19,7 +19,7 @@ export interface BuiltinPluginConfig extends BasePluginConfig {
 export interface ToolPluginConfig extends BasePluginConfig {
   type: 'tool';
   system: true;
-  implementation: 'tiandi_tongshou';
+  implementation: 'tiandi_tongshou' | 'docker_sandbox';
   toolNames: string[];
 }
 

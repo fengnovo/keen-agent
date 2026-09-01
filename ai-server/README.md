@@ -2,6 +2,9 @@
 
 Nest API 直接读写根目录 `.keen-agent/models.json` 和 `.keen-agent/plugins.json`，与命令行 Agent 共用模型及插件配置。Web 聊天会话保存在 `.keen-agent/chat-conversations.json`。
 
+Docker 沙箱的完整请求流程、信任边界、产物/预览 API 和新增文件目录见
+[沙箱执行、产物下载与页面预览架构](../docs/sandbox-architecture.md)。
+
 默认地址为 `http://127.0.0.1:3001/api`，可使用以下环境变量覆盖：
 
 - `AI_SERVER_PORT`：监听端口，默认 `3001`
@@ -11,6 +14,13 @@ Nest API 直接读写根目录 `.keen-agent/models.json` 和 `.keen-agent/plugin
 - `PLUGIN_CONFIG_PATH`：插件配置文件路径，主要用于测试或自定义部署
 - `CHAT_CONVERSATIONS_PATH`：Web 会话文件路径，主要用于测试或自定义部署
 - `VISION_MODEL_ID`：内部图片解析模型的模型配置 ID，默认 `qwen3.5-ocr`
+- `DOCKER_SANDBOX_IMAGE`：Docker 隔离执行镜像，默认 `keen-agent-sandbox:latest`
+- `DOCKER_SANDBOX_COMMAND_TIMEOUT_MS`：单条沙箱命令超时，默认 `180000`
+- `AI_AGENT_TIMEOUT_MS`：整轮模型和工具调用超时，默认 `300000`
+- `ARTIFACTS_PATH`：已发布产物目录，默认 `.keen-agent/artifacts`
+- `ARTIFACT_PUBLIC_BASE_URL`：返回给模型的下载 API 前缀，默认 `/api/ai-server/artifacts`
+- `PREVIEWS_PATH`：已发布静态站点目录，默认 `.keen-agent/previews`
+- `PREVIEW_PUBLIC_BASE_URL`：返回给前端的站点预览 API 前缀，默认 `/api/ai-server/previews`
 
 ## 图片问答
 
@@ -48,8 +58,37 @@ OCR 模型时服务端绕过 DeepAgent，所以开关只会保存，不影响该
 
 1. 本地工具通过源码中的实现目录解析。
 2. 已启用 MCP 通过官方 LangChain MCP Adapter 加载工具，并在流结束或取消时关闭连接。
-3. Skill 默认从 `ai-agent/.skills/` 解析，校验 `SKILL.md` 元数据及目录名后，把完整目录映射到内存 StateBackend；不会跟随符号链接，也不会自动执行其中的脚本。
+3. Skill 默认从 `ai-agent/.skills/` 解析，校验 `SKILL.md` 元数据及目录名；启用 Docker 沙箱时只读挂载完整目录，脚本通过容器内 `execute` 运行。
 4. `deepagent-core` 开启时创建 DeepAgent，关闭时退回普通 LangChain Agent。
+
+每个 MCP 独立连接。单个 MCP 不可用时，聊天会继续使用其余插件和主模型，并在回答末尾追加“插件降级提醒”；插件测试接口返回 400 和脱敏后的具体连接原因，而不是通用 500。该降级只避免整轮聊天失败，不会替代已经失效的实时搜索能力。
+
+## Docker 沙箱、产物下载与页面预览
+
+先在仓库根目录构建一次镜像：
+
+```bash
+docker build -t keen-agent-sandbox:latest ai-agent/.sandbox
+```
+
+系统插件 `docker-sandbox` 与会话“工具调用”开关同时开启时，DeepAgent 使用 Docker
+Backend 代替内存 StateBackend。最终文件必须写到 `/mnt/user-data/outputs`；模型结束后
+服务端会自动发布其中的普通文件，把下载链接追加到回答并写入会话历史。
+
+模型创建 React/Vite 等网站时，源码仍由 DeepAgent 的文件工具写入本轮
+`/mnt/user-data`，脚本和构建命令只在 Docker 中运行。镜像提供离线依赖和
+`prepare-web-project`，不包含项目业务模板，也不会挂载 Keen Agent 仓库。构建后的
+静态文件写入 `/mnt/user-data/previews/<名称>/` 后，服务端会把带随机 token 的预览链接
+追加到回答；前端识别该链接并显示受限 iframe。
+
+下载地址包含随机 token，产物保存在 `.keen-agent/artifacts/<id>/`。API 不接受文件路径，
+只根据服务端元数据解析实际文件，因此不能利用 `..` 或符号链接读取其他文件。
+单个下载产物最大 100 MB，每轮最多发布 20 个文件、总计 250 MB。
+
+预览 API 只发布包含 `index.html` 的普通目录，拒绝符号链接和路径穿越。每轮最多 5 个
+站点，每站最多 2,000 个文件、100 MB、20 层目录。响应使用 CSP sandbox、禁止外部网络
+连接，并关闭摄像头、麦克风、定位等浏览器权限；静态资源只为 opaque-origin iframe
+开放匿名 CORS，不授予页面访问父窗口或同源存储的能力。
 
 插件管理可以启动本地 MCP 进程并读取 Skill 文件，属于管理员能力。面向公网部署时应在反向代理或应用鉴权层保护 `/api/plugins`，不要开放给普通聊天用户。
 
@@ -76,4 +115,7 @@ MCP 的真实环境变量值只在 AI Server 进程内解析，API 返回和 JSO
 - `PATCH /api/conversations/:id`
 - `DELETE /api/conversations/:id`
 - `POST /api/chat/completions`（OpenAI 兼容 SSE）
+- `GET /api/artifacts/:id/download?token=...`
+- `GET /api/previews/:id/:token/index.html`
+- `GET /api/previews/:id/:token/*path`
 - `GET /api/health`

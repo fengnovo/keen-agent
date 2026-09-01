@@ -8,6 +8,7 @@ import { select } from '@inquirer/prompts';
 import { isBaseMessage } from '@langchain/core/messages';
 
 import { createAgentRuntime } from '../core/agent.ts';
+import { publishLocalArtifact } from '../sandbox/index.ts';
 import {
   CONVERSATION_FILE,
   loadConversationHistory,
@@ -33,6 +34,18 @@ import {
 
 // 加载动画实例：用于在等待模型响应时展示动态进度
 const loading = createLoading();
+
+const getAgentTimeoutMs = (): number => {
+  const value = Number(process.env.AI_AGENT_TIMEOUT_MS || 5 * 60_000);
+  return Number.isInteger(value) && value >= 10_000 && value <= 30 * 60_000
+    ? value
+    : 5 * 60_000;
+};
+
+const createCliAgentRuntime = (model: ModelConfig) =>
+  createAgentRuntime(model, {
+    sandbox: { publishArtifact: publishLocalArtifact },
+  });
 
 /**
  * 从命令行读取一行用户输入
@@ -152,7 +165,7 @@ export const runConversation = async () => {
   const loadedModelRegistry = await loadModelRegistry();
   let modelRegistry = loadedModelRegistry.registry;
   let activeModel = getActiveModel(modelRegistry);
-  let agentRuntime = await createAgentRuntime(activeModel);
+  let agentRuntime = await createCliAgentRuntime(activeModel);
   let agent = agentRuntime.agent;
 
   // 每次启动使用新的内存线程，并在首次请求时注入磁盘中恢复的历史消息
@@ -264,7 +277,7 @@ export const runConversation = async () => {
 
       try {
         // 先验证新模型环境配置，再持久化选择并替换运行中的 Agent
-        nextAgentRuntime = await createAgentRuntime(selectedModel);
+        nextAgentRuntime = await createCliAgentRuntime(selectedModel);
         const nextRestoredMessages = await loadConversationHistory();
         const nextRegistry = withActiveModel(
           modelRegistry,
@@ -318,7 +331,7 @@ export const runConversation = async () => {
           configurable: { thread_id: threadId },
           streamMode: ['messages', 'tools'],
           // 限制整轮 Agent 执行时间，包含模型重试和工具调用
-          signal: AbortSignal.timeout(30_000),
+          signal: AbortSignal.timeout(getAgentTimeoutMs()),
         },
       );
 
@@ -339,6 +352,23 @@ export const runConversation = async () => {
 
         // mode 为 'tools'：工具执行事件
         handleToolEvent(payload);
+      }
+
+      const artifacts = await agentRuntime.collectArtifacts();
+      if (artifacts.length > 0) {
+        resetMessageSection();
+        console.log('\n生成的文件：');
+        for (const artifact of artifacts) {
+          console.log(`- ${artifact.name}: ${artifact.url}`);
+        }
+      }
+      const previews = await agentRuntime.collectPreviews();
+      if (previews.length > 0) {
+        resetMessageSection();
+        console.log('\n生成的网站预览：');
+        for (const preview of previews) {
+          console.log(`- ${preview.name}: ${preview.url}`);
+        }
       }
 
       process.stdout.write('\n');

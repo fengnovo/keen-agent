@@ -16,6 +16,14 @@ import {
   type PluginRegistry,
 } from '../config/plugin-config.ts';
 import { resolvePlugins, type LoadedSkill } from '../plugins/runtime.ts';
+import {
+  DockerSandboxBackend,
+  publishLocalArtifact,
+  publishLocalPreview,
+  type AgentSandboxOptions,
+  type PublishedArtifact,
+  type PublishedPreview,
+} from '../sandbox/index.ts';
 
 /** 所有调用路径都会使用的基础提示词，与会话能力开关无关。 */
 const BASE_SYSTEM_PROMPT = [
@@ -33,6 +41,8 @@ export interface AgentFeatures {
   toolsEnabled?: boolean;
   /** Web 可传入已读取的快照；命令行未传时从共享插件文件加载。 */
   pluginRegistry?: PluginRegistry;
+  /** Web 注入产物持久化回调；CLI 使用默认本地沙箱目录。 */
+  sandbox?: AgentSandboxOptions;
 }
 
 /** ChatService 与命令行只依赖 Agent 共有的流式和状态接口。 */
@@ -57,7 +67,14 @@ export interface AgentRuntime {
     }
   >;
   enabledPluginNames: string[];
+  /** 本轮被隔离的可选插件错误，供调用方显式展示。 */
+  pluginWarnings: string[];
   deepAgentEnabled: boolean;
+  sandboxEnabled: boolean;
+  /** 扫描 outputs 并发布尚未登记的产物，可安全重复调用。 */
+  collectArtifacts: () => Promise<PublishedArtifact[]>;
+  /** 扫描 previews 并发布包含 index.html 的静态网站。 */
+  collectPreviews: () => Promise<PublishedPreview[]>;
   close: () => Promise<void>;
 }
 
@@ -147,15 +164,57 @@ export const createAgentRuntime = async (
     features.pluginRegistry ?? (await loadPluginRegistry()).registry;
   const plugins = await resolvePlugins(pluginRegistry, toolsEnabled);
   const allTools = [...plugins.tools, ...plugins.mcpTools];
+  let sandbox: DockerSandboxBackend | undefined;
+
+  if (plugins.deepAgentEnabled && plugins.sandboxEnabled) {
+    try {
+      // 将自定义 BaseSandbox 实例直接交给 DeepAgent 后，它的 ls/read/write/edit/
+      // delete/glob/grep/execute 都会落在本轮隔离目录或短生命周期容器中。
+      sandbox = await DockerSandboxBackend.create(
+        features.sandbox ?? {},
+        plugins.skills,
+      );
+    } catch (error) {
+      await plugins.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
   const inlineSkills = plugins.deepAgentEnabled
     ? ''
     : formatInlineSkills(plugins.skills);
   const skillRuntimePrompt =
-    plugins.deepAgentEnabled && plugins.skills.length > 0
+    plugins.deepAgentEnabled && plugins.skills.length > 0 && sandbox
+      ? [
+          '已启用 Skill 的完整目录只读挂载在 /skills/<skill-name>/，兼容路径为 /mnt/skills/public/<skill-name>/。',
+          '可以使用 execute 在 Docker 沙箱内执行 Skill 脚本。工作文件写入 /mnt/user-data/workspace，',
+          '需要返回给用户下载的最终文件必须写入 /mnt/user-data/outputs；系统会在本轮结束后自动生成下载链接。',
+        ].join('\n')
+      : plugins.deepAgentEnabled && plugins.skills.length > 0
       ? [
           '已启用 Skill 的完整目录位于 /skills/<skill-name>/，可以使用文件工具读取其中的 scripts、references 与 assets。',
           '当前 StateBackend 不提供 execute 或宿主机 shell；如果 Skill 明确依赖执行脚本、/mnt 路径或未安装的其他 Skill，',
           '应直接说明缺少相应运行能力，不要反复搜索不存在的目录，也不要声称已经生成文件。',
+        ].join('\n')
+      : '';
+  const sandboxRuntimePrompt = sandbox
+    ? [
+        '当前会话已启用 Docker 隔离执行器。execute 只在断网、只读根文件系统的受限容器中运行，',
+        '默认工作目录为 /mnt/user-data/workspace。不要尝试访问宿主机或 Docker socket。',
+        '生成 PPTX、PDF、DOCX、XLSX、图片、压缩包或代码文件后，务必把最终产物放进 /mnt/user-data/outputs。',
+        '生成官网或其他前端页面时，先用文件工具在工作区创建用户要求的源码，再运行 prepare-web-project <目录> 连接离线 React/Vite 依赖，修改后执行 npm run build，',
+        '再把 dist 内容复制到 /mnt/user-data/previews/<预览名称>/；其中必须包含 index.html，系统会自动嵌入页面预览。',
+        'prepare-web-project 不会生成页面内容。不要执行 npm install，也不要长期启动 npm run dev；沙箱断网且命令容器是短生命周期，使用 npm run build 发布静态站点。',
+      ].join('\n')
+    : plugins.sandboxEnabled && !plugins.deepAgentEnabled
+      ? 'Docker 隔离执行器依赖 DeepAgent 内置文件工具；当前 DeepAgent 核心已关闭，因此本轮不能执行命令。'
+      : '';
+  const pluginWarningPrompt =
+    plugins.warnings.length > 0
+      ? [
+          '以下可选插件本轮加载失败：',
+          ...plugins.warnings.map((warning) => `- ${warning}`),
+          '不得声称使用过这些插件或获得其实时数据；当问题依赖这些能力时，必须明确说明当前无法查询。',
         ].join('\n')
       : '';
   const systemPrompt = [
@@ -170,29 +229,79 @@ export const createAgentRuntime = async (
       : '当前会话已关闭工具调用：不得声称调用过工具或获得了工具执行结果。',
     inlineSkills,
     skillRuntimePrompt,
+    sandboxRuntimePrompt,
+    pluginWarningPrompt,
     `当前运行模型名称：${config.name}`,
     `当前运行模型标识：${config.model}`,
     '当用户询问当前使用的模型时，必须依据以上当前配置回答，不要沿用历史消息中的模型身份。',
   ].join('\n');
 
+  const publishedPaths = new Set<string>();
+  const publishedPreviewPaths = new Set<string>();
+  const collectArtifacts = async (): Promise<PublishedArtifact[]> => {
+    if (!sandbox) return [];
+    const collected: PublishedArtifact[] = [];
+
+    // 使用 absolutePath 去重只存在于当前运行时内，避免流层重复收集同一个文件。
+    for (const artifact of await sandbox.listOutputFiles()) {
+      if (publishedPaths.has(artifact.absolutePath)) continue;
+      const published = await (
+        features.sandbox?.publishArtifact ?? publishLocalArtifact
+      )(artifact);
+      publishedPaths.add(artifact.absolutePath);
+      collected.push(published);
+    }
+
+    return collected;
+  };
+  const collectPreviews = async (): Promise<PublishedPreview[]> => {
+    if (!sandbox) return [];
+    const collected: PublishedPreview[] = [];
+
+    for (const preview of await sandbox.listPreviewDirectories()) {
+      if (publishedPreviewPaths.has(preview.absolutePath)) continue;
+      const published = await (
+        features.sandbox?.publishPreview ?? publishLocalPreview
+      )(preview);
+      publishedPreviewPaths.add(preview.absolutePath);
+      collected.push(published);
+    }
+
+    return collected;
+  };
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    await Promise.allSettled([plugins.close(), sandbox?.close()]);
+  };
+
   try {
     if (plugins.deepAgentEnabled) {
-      const skillFiles = toSkillFiles(plugins.skills);
+      const skillFiles = sandbox ? undefined : toSkillFiles(plugins.skills);
       const agent = createDeepAgent({
         model,
         tools: allTools,
         systemPrompt,
         checkpointer: new MemorySaver(),
-        // Skill 内容放在 StateBackend 虚拟文件中，不授予真实磁盘访问权限。
-        skills: skillFiles ? ['/skills/'] : undefined,
+        // 没有沙箱时使用 StateBackend；有沙箱时 Skill 已物化为只读挂载。
+        backend: sandbox,
+        skills:
+          plugins.skills.length > 0
+            ? ['/skills/']
+            : undefined,
       });
 
       return {
         agent: agent as unknown as AgentExecutor,
         skillFiles,
         enabledPluginNames: plugins.enabledPluginNames,
+        pluginWarnings: plugins.warnings,
         deepAgentEnabled: true,
-        close: plugins.close,
+        sandboxEnabled: Boolean(sandbox),
+        collectArtifacts,
+        collectPreviews,
+        close,
       };
     }
 
@@ -206,11 +315,15 @@ export const createAgentRuntime = async (
     return {
       agent: agent as unknown as AgentExecutor,
       enabledPluginNames: plugins.enabledPluginNames,
+      pluginWarnings: plugins.warnings,
       deepAgentEnabled: false,
-      close: plugins.close,
+      sandboxEnabled: false,
+      collectArtifacts,
+      collectPreviews,
+      close,
     };
   } catch (error) {
-    await plugins.close().catch(() => undefined);
+    await close().catch(() => undefined);
     throw error;
   }
 };

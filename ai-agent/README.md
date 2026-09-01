@@ -2,6 +2,10 @@
 
 `ai-agent` 是整个仓库共享的 AI 核心包，负责模型与插件配置、LangChain 模型客户端、DeepAgent、工具运行时以及命令行会话。`ai-server` 会直接复用它导出的模型工厂和 Agent 运行时，避免 Web 与命令行各自维护一套模型和插件连接逻辑。
 
+沙箱从用户请求到 Docker、产物下载和页面预览的完整实现，请阅读
+[沙箱执行、产物下载与页面预览架构](../docs/sandbox-architecture.md)。该文档同时列出所有
+新增文件、虚拟目录映射、安全参数、使用示例和端到端流程图。
+
 ## 整体架构
 
 ```mermaid
@@ -11,6 +15,12 @@ flowchart LR
   Server -->|createChatModel| OCR[Qwen OCR 底层模型]
   CLI[ai-agent 命令行] -->|createAgentRuntime| MainAgent
   MainAgent --> Providers[Anthropic/OpenAI 兼容模型服务]
+  MainAgent -->|execute 与文件工具| Docker[Docker 隔离执行器]
+  Docker --> Outputs[本轮 outputs]
+  Docker --> PreviewOutputs[本轮 previews]
+  Outputs -->|复制、哈希、签发 token| Artifacts[产物下载存储]
+  PreviewOutputs -->|校验、复制、签发 token| PreviewAPI[静态预览 API]
+  PreviewAPI -->|受限 iframe| Browser
   OCR --> Providers
   ModelRegistry[models.json] --> Server
   ModelRegistry --> CLI
@@ -44,6 +54,7 @@ Web 与命令行共用模型和插件注册表，但会话历史相互独立：
 ai-agent/
 ├── .skills/                       # 项目级 Skill 完整资源包
 ├── .mcp/                          # 本地 stdio MCP 包和工作目录
+├── .sandbox/                      # Docker 沙箱镜像定义
 └── src/
     ├── core/
     │   └── agent.ts               # 模型工厂、提示词与 Agent 运行时
@@ -56,6 +67,11 @@ ai-agent/
     │   ├── mcp-loader.ts          # MCP 连接和工具发现
     │   ├── skill-loader.ts        # Skill 校验与完整目录装载
     │   └── runtime.ts             # 本轮插件能力聚合
+    ├── sandbox/
+    │   ├── docker-sandbox.ts      # DeepAgent Docker Backend
+    │   ├── local-artifact-publisher.ts # CLI 产物与页面持久化
+    │   ├── types.ts               # 沙箱与发布协议
+    │   └── index.ts               # 沙箱公共导出
     ├── cli/
     │   ├── conversation.ts        # 命令行多轮会话
     │   ├── conversation-store.ts  # 命令行历史持久化
@@ -69,6 +85,7 @@ ai-agent/
 
 - `.skills/<name>/` 保存包含 `SKILL.md`、`scripts/`、`references/` 和 `assets/` 的完整 Skill。插件路径可以只填写 `<name>`，也可以填写 `ai-agent/.skills/<name>`。
 - `.mcp/<plugin-id>/` 保存本地 stdio MCP 包。配置中的相对 `cwd` 以该目录为基准；HTTP MCP 不需要本地目录。
+- `.sandbox/` 保存沙箱镜像定义；运行产生的临时工作区位于被忽略的 `.keen-agent/sandboxes/`。
 - `.keen-agent/plugins.json` 仍是启停状态和连接参数的共享索引，不保存 Skill 正文、MCP 源码或密钥。
 
 旧的 `ai-agent/skills/...` 配置会在读取注册表时自动迁移为 `ai-agent/.skills/...`。
@@ -133,9 +150,36 @@ ai-agent/
 
 系统插件可启停但不能删除或在线修改实现。MCP 和 Skill 可以从 Web 管理页增删改查和测试。MCP 配置只保存环境变量名称：stdio 使用“子进程变量 → 宿主变量”，HTTP 使用“Header → 宿主变量”映射，真实密钥仍保存在 `ai-agent/.env`。
 
-启用 Skill 时，运行时会把目录中的 `SKILL.md`、`scripts/`、`references/` 和 `assets/` 等文件完整映射到内存 StateBackend 的 `/skills/<name>/`，不会因此获得仓库真实磁盘权限。符号链接不会被跟随；每个 Skill 最多 128 个文件、单文件 10 MB、总计 20 MB。当 DeepAgent 核心插件关闭时，只有 `SKILL.md` 内容会加入普通 Agent 的系统指令。
+多个 MCP 会按插件建立独立连接。某个可选 MCP 出现鉴权、欠费、超时或网络故障时，只移除该插件本轮的工具并记录警告，不再阻止整个 Agent 初始化；模型会被明确告知不得伪造该插件的实时结果。管理页“测试”仍会对被测插件返回失败，并显示经过脱敏的具体原因。
 
-StateBackend 不提供宿主机 shell，Skill 脚本当前可以被 Agent 查看，但不会自动执行。来自其他 Agent 平台、依赖 `/mnt`、`execute` 或其他 Skill 的包，需要配置对应依赖和受控执行器，不能仅复制一个目录就视为可运行。
+启用 Skill 时，运行时会装载目录中的 `SKILL.md`、`scripts/`、`references/` 和 `assets/`。未开启 Docker 沙箱时，这些文件映射到内存 StateBackend 的 `/skills/<name>/`；开启沙箱后，只把已启用 Skill 物化并只读挂载到 `/skills/<name>/` 和兼容路径 `/mnt/skills/public/<name>/`。符号链接不会被跟随；每个 Skill 最多 128 个文件、单文件 10 MB、总计 20 MB。当 DeepAgent 核心插件关闭时，只有 `SKILL.md` 内容会加入普通 Agent 的系统指令。
+
+## Docker 隔离执行、产物与页面预览
+
+默认系统插件 `docker-sandbox` 使用 DeepAgent 原生 Sandbox Backend 提供真实的
+`execute` 和文件工具。先构建本机镜像：
+
+```bash
+docker build -t keen-agent-sandbox:latest ai-agent/.sandbox
+```
+
+安全边界如下：
+
+- 每次命令使用短生命周期容器，命令不会经过宿主 shell。
+- DeepAgent 的虚拟 `rootDir` 是 `/mnt/user-data`，宿主侧只对应 `.keen-agent/sandboxes/<session>/user-data`，不是仓库根目录。
+- `write_file`、二进制读取和 `edit_file` 通过受限文件适配层持久化，但路径解析固定在上述会话目录；相对路径固定落到 `workspace/`，不会使用 AI Server 的 `process.cwd()`。文本读取、搜索、删除及所有脚本命令则通过容器执行。
+- 默认关闭网络、只读根文件系统、删除全部 Linux capabilities，并启用 `no-new-privileges`。
+- 限制为 1.5 CPU、768 MB 内存、128 个进程；不挂载 Docker socket、仓库或宿主环境变量。
+- 仅 `/mnt/user-data` 可写；工作文件放在 `workspace/`，最终产物放在 `outputs/`。
+- 用户网站源码由模型通过沙箱文件工具逐个创建和修改；镜像只预装依赖，不包含预制网站内容。
+- React/Vite 项目可以调用 `prepare-web-project <目录>` 连接镜像内的离线依赖；该命令只准备依赖与通用 `package.json`，不会生成页面源码。
+- 静态站点构建后把 `dist` 内容复制到 `previews/<名称>/`；目录必须包含 `index.html`，Web 端会发布为受限 iframe 预览。
+- 本轮结束后临时目录删除；Web 服务会先把 outputs 和 previews 中通过校验的内容复制到持久发布目录。
+- 单个容器文件上限 100 MB；每轮最多发布 20 个产物、总计 250 MB，符号链接不会发布。
+
+Web 端产物会生成 `/api/ai-server/artifacts/:id/download?token=...` 链接。下载时同时校验随机 UUID、随机 token、文件大小和元数据，响应使用 `attachment` 且禁止缓存。命令行会把产物复制到 `.keen-agent/cli-artifacts/` 并输出持久的本地 `file://` 链接。
+
+页面预览会生成 `/api/ai-server/previews/:id/:token/index.html` 链接。每轮最多发布 5 个站点，每个站点最多 2,000 个普通文件、100 MB、20 层目录；符号链接不会被复制。浏览器 iframe 不授予同源、表单、下载或打开新窗口的权限，响应同时限制网络连接、摄像头、麦克风等浏览器能力。命令行预览复制到 `.keen-agent/cli-previews/` 并输出本地入口地址。
 
 ## 模型注册表
 
@@ -194,6 +238,10 @@ Web 图片编排还支持：
 
 ```bash
 VISION_MODEL_ID=qwen3.5-ocr
+# 可选：覆盖默认沙箱镜像、单次命令超时和整轮 Agent 超时
+DOCKER_SANDBOX_IMAGE=keen-agent-sandbox:latest
+DOCKER_SANDBOX_COMMAND_TIMEOUT_MS=180000
+AI_AGENT_TIMEOUT_MS=300000
 ```
 
 未配置时默认使用 `qwen3.5-ocr`。

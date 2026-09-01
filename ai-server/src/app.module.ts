@@ -9,6 +9,10 @@ import { ModelsController } from './models/models.controller.js';
 import { ModelsService } from './models/models.service.js';
 import { PluginsController } from './plugins/plugins.controller.js';
 import { PluginsService } from './plugins/plugins.service.js';
+import { ArtifactsController } from './artifacts/artifacts.controller.js';
+import { ArtifactsService } from './artifacts/artifacts.service.js';
+import { PreviewsController } from './previews/previews.controller.js';
+import { PreviewsService } from './previews/previews.service.js';
 
 /**
  * AI Server 根模块：模型配置、Web 会话和聊天流共享同一个 ModelsService。
@@ -20,12 +24,16 @@ import { PluginsService } from './plugins/plugins.service.js';
     PluginsController,
     ConversationsController,
     ChatController,
+    ArtifactsController,
+    PreviewsController,
   ],
   providers: [
     ModelsService,
     PluginsService,
     ConversationsService,
     ChatService,
+    ArtifactsService,
+    PreviewsService,
   ],
 })
 export class AppModule {}

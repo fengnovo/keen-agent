@@ -26,6 +26,7 @@ import { THOUGHT_CHAIN_CONFIG } from './config';
 import { getConversation } from './conversation-api';
 import { ThinkComponent } from '../_components/ThinkComponent';
 import { MarkdownCode } from '../_components/MarkdownCode';
+import { MarkdownLink } from '../_components/MarkdownLink';
 import { markdownThemeStyle } from './theme';
 
 /**
@@ -138,8 +139,9 @@ export const providerFactory = (
           ChatMessage
         >('/api/ai-server/chat/completions', {
           manual: true,
-          timeout: 65_000,
-          streamTimeout: 65_000,
+          // Docker 沙箱生成 PPT/PDF 等产物可能跨越多次模型与工具调用。
+          timeout: 310_000,
+          streamTimeout: 310_000,
           params: {
             stream: true,
             model: modelId,
@@ -226,6 +228,7 @@ export const getRole = (className: string): BubbleListProps['role'] => ({
           components={{
             think: ThinkComponent,
             code: MarkdownCode,
+            a: MarkdownLink,
           }}
           protectCustomTagNewlines={false}
           disableCustomTagBlockMarkdown={false}

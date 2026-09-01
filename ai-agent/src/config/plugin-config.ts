@@ -32,7 +32,7 @@ export const toolPluginSchema = z.object({
   ...basePluginShape,
   type: z.literal('tool'),
   system: z.literal(true),
-  implementation: z.enum(['tiandi_tongshou']),
+  implementation: z.enum(['tiandi_tongshou', 'docker_sandbox']),
   toolNames: z.array(z.string().trim().min(1)).min(1),
 });
 
@@ -188,6 +188,27 @@ export const createDefaultPluginRegistry = (): PluginRegistry =>
         toolNames: ['tiandi_tongshou'],
         enabled: true,
       },
+      {
+        id: 'docker-sandbox',
+        name: 'Docker 隔离执行器',
+        description:
+          '在本机 Docker 的受限容器中执行命令、处理文件并生成可下载产物。',
+        type: 'tool',
+        system: true,
+        implementation: 'docker_sandbox',
+        toolNames: [
+          'execute',
+          'ls',
+          'read_file',
+          'write_file',
+          'edit_file',
+          'glob',
+          'grep',
+          'artifact-download',
+          'web-preview',
+        ],
+        enabled: true,
+      },
     ],
   });
 
@@ -199,7 +220,7 @@ export const formatPluginValidationError = (error: z.ZodError): string =>
     })
     .join('; ');
 
-/** 把早期公开 skills 目录引用迁移到新的隐藏资源目录。 */
+/** 把早期 Skill 路径升级，并为旧注册表补上新增的系统沙箱插件。 */
 const migratePluginRegistry = (
   registry: PluginRegistry,
 ): { registry: PluginRegistry; changed: boolean } => {
@@ -219,6 +240,26 @@ const migratePluginRegistry = (
       path: `${SKILLS_PREFIX}${plugin.path.slice(LEGACY_SKILLS_PREFIX.length)}`,
     };
   });
+
+  if (!plugins.some((plugin) => plugin.id === 'docker-sandbox')) {
+    plugins.push(
+      createDefaultPluginRegistry().plugins.find(
+        (plugin) => plugin.id === 'docker-sandbox',
+      )!,
+    );
+    changed = true;
+  }
+
+  const dockerSandbox = plugins.find(
+    (plugin) => plugin.id === 'docker-sandbox' && plugin.type === 'tool',
+  );
+  if (
+    dockerSandbox?.type === 'tool' &&
+    !dockerSandbox.toolNames.includes('web-preview')
+  ) {
+    dockerSandbox.toolNames.push('web-preview');
+    changed = true;
+  }
 
   return {
     registry: changed

@@ -11,6 +11,7 @@ import {
   type McpTools,
 } from './mcp-loader.ts';
 import { loadSkill, type LoadedSkill } from './skill-loader.ts';
+import { DockerSandboxBackend } from '../sandbox/docker-sandbox.ts';
 
 export { loadSkill } from './skill-loader.ts';
 export type { LoadedSkill, LoadedSkillFile } from './skill-loader.ts';
@@ -18,10 +19,14 @@ export type { LoadedSkill, LoadedSkillFile } from './skill-loader.ts';
 export interface ResolvedPlugins {
   /** DeepAgent 核心插件关闭时，调用方应退回普通 LangChain Agent。 */
   deepAgentEnabled: boolean;
+  /** 启用后由 Agent 层把 DeepAgent 文件后端切换为 Docker 沙箱。 */
+  sandboxEnabled: boolean;
   tools: SystemTool[];
   mcpTools: McpTools;
   skills: LoadedSkill[];
   enabledPluginNames: string[];
+  /** 可选插件初始化失败时保留本轮可用能力，并把原因交给 Agent 和 UI。 */
+  warnings: string[];
   close: () => Promise<void>;
 }
 
@@ -36,10 +41,12 @@ export const resolvePlugins = async (
   if (!toolsEnabled) {
     return {
       deepAgentEnabled: false,
+      sandboxEnabled: false,
       tools: [],
       mcpTools: [],
       skills: [],
       enabledPluginNames: [],
+      warnings: [],
       close: async () => undefined,
     };
   }
@@ -58,8 +65,13 @@ export const resolvePlugins = async (
   const skillPlugins = enabledPlugins.filter(
     (plugin): plugin is SkillPluginConfig => plugin.type === 'skill',
   );
-  const tools = toolPlugins.map(
-    (plugin) => systemToolCatalog[plugin.implementation],
+  const sandboxEnabled = toolPlugins.some(
+    (plugin) => plugin.implementation === 'docker_sandbox',
+  );
+  const tools = toolPlugins.flatMap((plugin) =>
+    plugin.implementation === 'tiandi_tongshou'
+      ? [systemToolCatalog[plugin.implementation]]
+      : [],
   );
   const skills = await Promise.all(skillPlugins.map(loadSkill));
   const skillNames = new Set<string>();
@@ -71,12 +83,19 @@ export const resolvePlugins = async (
   }
 
   const mcpRuntime = await loadMcpTools(mcpPlugins);
+  const failedMcpIds = new Set(
+    mcpRuntime.failures.map((failure) => failure.pluginId),
+  );
   return {
     deepAgentEnabled,
+    sandboxEnabled,
     tools,
     mcpTools: mcpRuntime.tools,
     skills,
-    enabledPluginNames: enabledPlugins.map((plugin) => plugin.name),
+    enabledPluginNames: enabledPlugins
+      .filter((plugin) => !failedMcpIds.has(plugin.id))
+      .map((plugin) => plugin.name),
+    warnings: mcpRuntime.failures.map((failure) => failure.message),
     close: mcpRuntime.close,
   };
 };
@@ -107,6 +126,27 @@ export const testPlugin = async (
       message: `MCP 连接成功，共发现 ${tools.length} 个工具`,
       tools,
     };
+  }
+
+  if (
+    plugin.type === 'tool' &&
+    plugin.implementation === 'docker_sandbox'
+  ) {
+    const sandbox = await DockerSandboxBackend.create({}, []);
+    try {
+      const result = await sandbox.execute(
+        'python --version && node --version',
+      );
+      if (result.exitCode !== 0) {
+        throw new Error(result.output || 'Docker 沙箱命令执行失败');
+      }
+      return {
+        message: `Docker 隔离执行器可用：${result.output.trim().replace(/\n/g, ' / ')}`,
+        tools: plugin.toolNames,
+      };
+    } finally {
+      await sandbox.close().catch(() => undefined);
+    }
   }
 
   const names =

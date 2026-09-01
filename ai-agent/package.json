@@ -24,6 +24,7 @@
     "./core": "./src/core/index.ts",
     "./config": "./src/config/index.ts",
     "./plugins": "./src/plugins/index.ts",
+    "./sandbox": "./src/sandbox/index.ts",
     "./cli": "./src/cli/index.ts",
     "./agent": "./src/core/agent.ts",
     "./model-config": "./src/config/model-config.ts",
