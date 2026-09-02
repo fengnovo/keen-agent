@@ -212,9 +212,6 @@ export const useStyle = createStyles(({ token, css }) => {
         background-position: bottom;
       }
 
-      .x-markdown > .markdown-thought-chain + * {
-        margin-block-start: ${token.marginXS}px;
-      }
     `,
     /** 侧边栏宽度调整条 */
     resizeHandle: css`

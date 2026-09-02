@@ -86,7 +86,7 @@ body {
 .x-markdown-theme,
 .x-markdown-theme
   :where(
-    .markdown-thought-chain,
+    .reasoning-timeline,
     .ant-thought-chain-node,
     .ant-thought-chain-node-box,
     .ant-thought-chain-node-content,
@@ -100,39 +100,160 @@ body {
   box-sizing: border-box;
 }
 
-.x-markdown-theme .markdown-thought-chain {
+/* 助手内容使用非常浅的底色，保留与页面的轻微层次，不形成厚重灰色大块。 */
+.assistant-chat-bubble.ant-bubble .ant-bubble-content {
   width: 100%;
+  max-width: 100%;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: #fafafa;
+  color: #262626;
+  box-sizing: border-box;
 }
 
-.x-markdown-theme .ant-thought-chain-node-content-box {
-  /* 思考内容使用次级灰色，和正式答案建立清晰的视觉层级。 */
-  --text-color: var(--thinking-text-color, #8c8c8c);
-  --heading-color: var(--thinking-heading-color, #595959);
-  --xmd-tail-color: var(--thinking-text-color, #8c8c8c);
-  color: var(--thinking-text-color, #8c8c8c);
+.assistant-message-content,
+.assistant-answer,
+.reasoning-panel {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.assistant-answer {
+  margin-block-start: 12px;
+}
+
+.assistant-answer:first-child {
+  margin-block-start: 0;
+}
+
+/* 正式回答采用接近常规正文的尺寸，标题只做适度分级。 */
+.x-markdown-theme.assistant-markdown-answer {
+  --font-size: 15px;
+  --xmd-tail-color: #595959;
+  color: #262626;
+  font-size: 15px;
+  line-height: 1.72;
   overflow-wrap: anywhere;
 }
 
-.x-markdown-theme
-  .markdown-thought-chain
-  :where(.ant-thought-chain-node-title, .ant-thought-chain-node-collapse-icon) {
-  color: var(--thinking-title-color, #595959);
+.x-markdown-theme.assistant-markdown-answer :where(h1, h2, h3, h4) {
+  line-height: 1.35;
+  margin-block: 1.1em 0.55em;
 }
 
-.x-markdown-theme
-  .markdown-thought-chain
-  .ant-thought-chain-node-content-box
-  :where(a, blockquote) {
-  color: var(--thinking-heading-color, #595959);
+.x-markdown-theme.assistant-markdown-answer h1 {
+  font-size: 23px;
+}
+
+.x-markdown-theme.assistant-markdown-answer h2 {
+  font-size: 20px;
+}
+
+.x-markdown-theme.assistant-markdown-answer h3 {
+  font-size: 17px;
+}
+
+.x-markdown-theme.assistant-markdown-answer h4 {
+  font-size: 16px;
+}
+
+.x-markdown-theme.assistant-markdown-answer :where(p, ul, ol) {
+  margin-block: 0.65em;
+}
+
+/* 思考区是独立的可折叠时间线，背景再浅一层并弱化文字。 */
+.reasoning-panel {
+  width: 100%;
+  padding: 10px 12px 8px;
+  border: 1px solid #eeeeee;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.reasoning-panel-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: #595959;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.reasoning-panel-summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning-panel-symbol {
+  color: #376dff;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.reasoning-panel-chevron {
+  margin-inline-start: auto;
+  color: #8c8c8c;
+  font-size: 12px;
+  transition: transform 180ms ease;
+}
+
+.reasoning-panel[open] .reasoning-panel-chevron {
+  transform: rotate(180deg);
+}
+
+.reasoning-timeline {
+  width: 100%;
+  margin-block-start: 12px;
+  padding-inline-start: 2px;
+}
+
+.reasoning-step-dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  margin: 5px;
+  border-radius: 999px;
+  background: #8c8c8c;
+}
+
+.reasoning-timeline :where(.ant-thought-chain-item-title, .ant-thought-chain-node-title) {
+  color: #62676f;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.65;
+}
+
+.reasoning-timeline :where(.ant-thought-chain-item-description, .ant-thought-chain-node-description) {
+  color: #92969d;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.x-markdown-theme.assistant-markdown-reasoning {
+  --font-size: 14px;
+  --text-color: #62676f;
+  --heading-color: #4f545c;
+  --xmd-tail-color: #8c8c8c;
+  color: #62676f;
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.x-markdown-theme.assistant-markdown-reasoning :where(p, ul, ol, h1, h2, h3, h4) {
+  margin-block: 0.35em;
 }
 
 /* 只降低思考正文颜色，不覆盖代码高亮器自己的语法色。 */
-.x-markdown-theme
-  .markdown-thought-chain
-  .ant-thought-chain-node-content-box
-  :not(pre)
-  > code {
-  color: var(--thinking-heading-color, #595959) !important;
+.x-markdown-theme.assistant-markdown-reasoning :where(a, blockquote),
+.x-markdown-theme.assistant-markdown-reasoning :not(pre) > code {
+  color: #4f545c !important;
 }
 
 /* 窄屏时由代码区域自身横向滚动，不扩大消息或页面宽度。 */
@@ -180,7 +301,28 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .x-markdown-theme .xmd-tail {
+  .x-markdown-theme .xmd-tail,
+  .reasoning-panel-chevron {
     animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .assistant-chat-bubble.ant-bubble .ant-bubble-content {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .x-markdown-theme.assistant-markdown-answer {
+    font-size: 14.5px;
+  }
+
+  .x-markdown-theme.assistant-markdown-answer h1 {
+    font-size: 21px;
+  }
+
+  .x-markdown-theme.assistant-markdown-answer h2 {
+    font-size: 18px;
   }
 }

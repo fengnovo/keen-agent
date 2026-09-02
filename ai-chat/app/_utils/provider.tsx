@@ -4,11 +4,7 @@
  */
 
 import React from 'react';
-import { GlobalOutlined } from '@ant-design/icons';
-import type { BubbleListProps, ThoughtChainItemProps } from '@ant-design/x';
-import { ThoughtChain } from '@ant-design/x';
-import XMarkdown from '@ant-design/x-markdown';
-import type { XMarkdownProps } from '@ant-design/x-markdown';
+import type { BubbleListProps } from '@ant-design/x';
 import type { DefaultMessageInfo } from '@ant-design/x-sdk';
 import {
   DeepSeekChatProvider,
@@ -22,12 +18,8 @@ import type {
   XRequestOptions,
 } from '@ant-design/x-sdk';
 import { ChatMessage } from './types';
-import { THOUGHT_CHAIN_CONFIG } from './config';
 import { getConversation } from './conversation-api';
-import { ThinkComponent } from '../_components/ThinkComponent';
-import { MarkdownCode } from '../_components/MarkdownCode';
-import { MarkdownLink } from '../_components/MarkdownLink';
-import { markdownThemeStyle } from './theme';
+import { AssistantMessageContent } from '../_components/AssistantMessageContent';
 
 /**
  * Provider 缓存
@@ -45,32 +37,6 @@ const providerCaches = new Map<
   string,
   DeepSeekChatProvider<ChatMessage, ChatRequestParams, ModelStreamOutput>
 >();
-
-/**
- * 仅允许用于思考过程的自定义标签以原始 HTML 形式进入渲染器。
- * 模型输出的其他 HTML（尤其是未闭合的 script/style 标签）必须转义，
- * 否则浏览器会把后续 Markdown 一并吞进该标签，造成流已结束但页面被截断。
- */
-const THINK_TAG_PATTERN = /^<\/?think(?:\s[^>]*)?>\s*$/i;
-
-const HTML_ESCAPE_MAP: Record<string, string> = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-};
-
-const escapeHtml = (value: string) =>
-  value.replace(/[&<>"']/g, (character) => HTML_ESCAPE_MAP[character]);
-
-const markdownConfig: NonNullable<XMarkdownProps['config']> = {
-  renderer: {
-    html({ text }) {
-      return THINK_TAG_PATTERN.test(text) ? text : escapeHtml(text);
-    },
-  },
-};
 
 /** DeepSeekChatProvider 所需的 OpenAI 兼容 SSE 字段集合。 */
 export type ModelStreamOutput = Partial<Record<SSEFields, XModelResponse>>;
@@ -203,51 +169,16 @@ export const getRole = (className: string): BubbleListProps['role'] => ({
   /** 助手消息配置 */
   assistant: {
     placement: 'start',
-    /** 消息头部 - 显示思考链状态 */
-    header: (_, { status }) => {
-      const config =
-        THOUGHT_CHAIN_CONFIG[status as keyof typeof THOUGHT_CHAIN_CONFIG];
-      return config ? (
-        <ThoughtChain.Item
-          style={{
-            marginBottom: 8,
-          }}
-          status={config.status as ThoughtChainItemProps['status']}
-          variant='solid'
-          icon={<GlobalOutlined />}
-          title={config.title}
-        />
-      ) : null;
-    },
-    /** 消息内容渲染 - 使用 Markdown 渲染 */
+    variant: 'borderless',
+    rootClassName: 'assistant-chat-bubble',
+    /** 思考时间线和正式回答分别渲染，避免工具记录混入正文。 */
     contentRender: (content: string, { status }) => {
       return (
-        <XMarkdown
-          paragraphTag='div'
-          config={markdownConfig}
-          components={{
-            think: ThinkComponent,
-            code: MarkdownCode,
-            a: MarkdownLink,
-          }}
-          protectCustomTagNewlines={false}
-          disableCustomTagBlockMarkdown={false}
+        <AssistantMessageContent
+          content={content}
           className={className}
-          style={markdownThemeStyle}
-          streaming={{
-            hasNextChunk: status === 'updating',
-            enableAnimation: true,
-            animationConfig: {
-              fadeDuration: 320,
-              easing: 'ease-out',
-            },
-            tail: {
-              content: '▋',
-            },
-          }}
-        >
-          {content}
-        </XMarkdown>
+          status={status}
+        />
       );
     },
   },

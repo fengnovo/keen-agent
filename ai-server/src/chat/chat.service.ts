@@ -129,6 +129,97 @@ export interface ChatStreamChunk {
   reasoningContent?: string;
 }
 
+type ToolTraceStatus = 'running' | 'success' | 'error';
+
+interface ToolTraceEvent {
+  type: 'tool';
+  callId: string;
+  name: string;
+  status: ToolTraceStatus;
+  inputSummary?: string;
+  outputSummary?: string;
+}
+
+const TRACE_SUMMARY_MAX_LENGTH = 180;
+const TOOL_INPUT_SUMMARY_KEYS = [
+  'query',
+  'q',
+  'url',
+  'urls',
+  'path',
+  'file_path',
+  'pattern',
+  'task',
+] as const;
+
+const compactTraceText = (value: unknown): string | undefined => {
+  if (typeof value === 'string') {
+    const compact = value.replace(/\s+/g, ' ').trim();
+    return compact
+      ? compact.slice(0, TRACE_SUMMARY_MAX_LENGTH)
+      : undefined;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .map(compactTraceText)
+      .filter((item): item is string => Boolean(item));
+    return items.length > 0
+      ? items.join('、').slice(0, TRACE_SUMMARY_MAX_LENGTH)
+      : undefined;
+  }
+  return undefined;
+};
+
+/** 工具参数只展示查询词、URL、路径等低风险摘要，避免把任意参数或密钥写入 UI 轨迹。 */
+const summarizeToolInput = (input: unknown): string | undefined => {
+  const direct = compactTraceText(input);
+  if (direct) return direct;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return undefined;
+  }
+
+  const record = input as Record<string, unknown>;
+  for (const key of TOOL_INPUT_SUMMARY_KEYS) {
+    const summary = compactTraceText(record[key]);
+    if (summary) return summary;
+  }
+  return undefined;
+};
+
+const summarizeToolOutput = (output: unknown): string => {
+  let serialized = '';
+  try {
+    serialized =
+      typeof output === 'string' ? output : JSON.stringify(output) || '';
+  } catch {
+    serialized = '';
+  }
+
+  const urls = new Set(serialized.match(/https?:\/\/[^\s"')\]]+/gi) ?? []);
+  if (urls.size > 0) return `返回 ${urls.size} 个链接`;
+  if (Array.isArray(output)) return `返回 ${output.length} 条结果`;
+
+  if (output && typeof output === 'object') {
+    const record = output as Record<string, unknown>;
+    const count = record.total ?? record.count;
+    if (typeof count === 'number') return `返回 ${count} 条结果`;
+  }
+
+  return '调用完成';
+};
+
+const encodeTracePayload = (payload: ToolTraceEvent): string =>
+  encodeURIComponent(JSON.stringify(payload));
+
+const createToolTraceMarker = (payload: ToolTraceEvent): string =>
+  `\n\n[keen-tool-event:${encodeTracePayload(payload)}]\n\n`;
+
+const createReasoningDurationMarker = (durationMs: number): string =>
+  `\n\n[keen-reasoning-duration:${Math.max(1, Math.round(durationMs))}]\n\n`;
+
 /**
  * 兼容 LangChain 的字符串内容以及 Anthropic 的分块内容。
  * 工具调用块不在这里输出，避免把内部协议对象直接展示给用户。
@@ -472,6 +563,17 @@ export class ChatService {
       AbortSignal.timeout(getAgentTimeoutMs()),
     ]);
     let reasoningContent = '';
+    const reasoningStartedAt = Date.now();
+    let reasoningFinished = false;
+    const finishReasoning = (): string | undefined => {
+      if (reasoningFinished) return undefined;
+      reasoningFinished = true;
+      const marker = createReasoningDurationMarker(
+        Date.now() - reasoningStartedAt,
+      );
+      reasoningContent += marker;
+      return marker;
+    };
     const currentUserMessage = prepared.conversation.messages.find(
       (message) => message.id === prepared.userMessageId,
     );
@@ -588,7 +690,16 @@ export class ChatService {
 
       if (chunk.reasoningContent) reasoningContent += chunk.reasoningContent;
 
+      if (chunk.content) {
+        const durationMarker = finishReasoning();
+        if (durationMarker) yield { reasoningContent: durationMarker };
+      }
       yield chunk;
+
+      if (!reasoningFinished) {
+        const durationMarker = finishReasoning();
+        if (durationMarker) yield { reasoningContent: durationMarker };
+      }
 
       if (!clientSignal.aborted) {
         await this.conversationsService.appendAssistantMessage(
@@ -614,10 +725,92 @@ export class ChatService {
       },
     );
     let content = '';
+    let toolSequence = 0;
+    const pendingToolCalls = new Map<string, string[]>();
+
+    const rememberToolCall = (name: string, callId: string) => {
+      const calls = pendingToolCalls.get(name) ?? [];
+      calls.push(callId);
+      pendingToolCalls.set(name, calls);
+    };
+
+    const resolveToolCall = (name: string, callId?: string): string => {
+      const calls = pendingToolCalls.get(name) ?? [];
+      if (callId) {
+        const index = calls.indexOf(callId);
+        if (index >= 0) calls.splice(index, 1);
+        return callId;
+      }
+      return calls.shift() ?? `tool-${++toolSequence}`;
+    };
 
     for await (const event of stream) {
-      // tools 事件由 Agent 内部消费；页面当前只渲染模型消息流。
-      if (!Array.isArray(event) || event[0] !== 'messages') continue;
+      if (!Array.isArray(event)) continue;
+
+      if (event[0] === 'tools') {
+        const payload = event[1];
+        if (!payload || typeof payload !== 'object') continue;
+
+        const toolEvent = payload as {
+          event?: unknown;
+          toolCallId?: unknown;
+          name?: unknown;
+          input?: unknown;
+          output?: unknown;
+          error?: unknown;
+        };
+        if (typeof toolEvent.event !== 'string') continue;
+        if (typeof toolEvent.name !== 'string' || !toolEvent.name.trim()) {
+          continue;
+        }
+
+        const name = toolEvent.name.trim();
+        const providedCallId =
+          typeof toolEvent.toolCallId === 'string' && toolEvent.toolCallId
+            ? toolEvent.toolCallId
+            : undefined;
+        let trace: ToolTraceEvent | undefined;
+
+        if (toolEvent.event === 'on_tool_start') {
+          const callId = providedCallId ?? `tool-${++toolSequence}`;
+          rememberToolCall(name, callId);
+          trace = {
+            type: 'tool',
+            callId,
+            name,
+            status: 'running',
+            inputSummary: summarizeToolInput(toolEvent.input),
+          };
+        } else if (toolEvent.event === 'on_tool_end') {
+          trace = {
+            type: 'tool',
+            callId: resolveToolCall(name, providedCallId),
+            name,
+            status: 'success',
+            outputSummary: summarizeToolOutput(toolEvent.output),
+          };
+        } else if (toolEvent.event === 'on_tool_error') {
+          trace = {
+            type: 'tool',
+            callId: resolveToolCall(name, providedCallId),
+            name,
+            status: 'error',
+            outputSummary:
+              toolEvent.error instanceof Error
+                ? toolEvent.error.message.slice(0, TRACE_SUMMARY_MAX_LENGTH)
+                : compactTraceText(toolEvent.error) ?? '调用失败',
+          };
+        }
+
+        if (trace) {
+          const marker = createToolTraceMarker(trace);
+          reasoningContent += marker;
+          yield { reasoningContent: marker };
+        }
+        continue;
+      }
+
+      if (event[0] !== 'messages') continue;
 
       const payload = event[1];
       if (!Array.isArray(payload)) continue;
@@ -638,7 +831,16 @@ export class ChatService {
       if (chunk.content) content += chunk.content;
       if (chunk.reasoningContent) reasoningContent += chunk.reasoningContent;
 
+      if (chunk.content) {
+        const durationMarker = finishReasoning();
+        if (durationMarker) yield { reasoningContent: durationMarker };
+      }
       if (chunk.content || chunk.reasoningContent) yield chunk;
+    }
+
+    if (!reasoningFinished) {
+      const durationMarker = finishReasoning();
+      if (durationMarker) yield { reasoningContent: durationMarker };
     }
 
     if (prepared.agentRuntime.pluginWarnings.length > 0) {
