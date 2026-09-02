@@ -418,8 +418,17 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
             <Form.Item label='最大重试次数' name='maxRetries'>
               <InputNumber min={0} max={10} step={1} />
             </Form.Item>
-            <Form.Item label='最大 Token（可选）' name='maxTokens'>
-              <InputNumber min={1} step={1} />
+            <Form.Item
+              label='最大 Token（自动）'
+              name='maxTokens'
+              tooltip='服务端会按模型家族强制设置为最大输出长度，保存后自动回填'
+            >
+              <InputNumber
+                min={1}
+                step={1}
+                disabled
+                placeholder='保存后自动设置'
+              />
             </Form.Item>
           </Space>
         </Form>

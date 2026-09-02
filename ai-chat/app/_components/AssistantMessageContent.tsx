@@ -2,6 +2,10 @@
 
 import React from 'react';
 
+import {
+  extractReasoningTraceMarkers,
+  reconcileReasoningTrace,
+} from '../_utils/reasoning-trace';
 import { MarkdownContent } from './MarkdownContent';
 import { ThinkComponent } from './ThinkComponent';
 
@@ -27,13 +31,22 @@ const splitAssistantContent = (
 ): AssistantContentParts => {
   const openTag = THINK_OPEN_PATTERN.exec(content);
   if (!openTag || openTag.index === undefined) {
+    const inlineTrace = extractReasoningTraceMarkers(content);
+    if (inlineTrace.hasTrace) {
+      return {
+        reasoning: inlineTrace.reasoning ?? '',
+        answer: inlineTrace.answer,
+        reasoningDone: !['loading', 'updating'].includes(status ?? ''),
+      };
+    }
+
     return { answer: content, reasoningDone: true };
   }
 
   const reasoningStart = openTag.index + openTag[0].length;
   const closingIndex = content.indexOf(THINK_CLOSE_TAG, reasoningStart);
   const hasClosingTag = closingIndex >= 0;
-  const reasoning = content.slice(
+  const initialReasoning = content.slice(
     reasoningStart,
     hasClosingTag ? closingIndex : content.length,
   );
@@ -41,13 +54,20 @@ const splitAssistantContent = (
   const trailingContent = hasClosingTag
     ? content.slice(closingIndex + THINK_CLOSE_TAG.length).trimStart()
     : '';
-  const answer = [leadingContent, trailingContent].filter(Boolean).join('\n\n');
+  const initialAnswer = [leadingContent, trailingContent]
+    .filter(Boolean)
+    .join('\n\n');
+  const reconciled = reconcileReasoningTrace(initialReasoning, initialAnswer);
   const reasoningDone =
     hasClosingTag ||
     THINK_DONE_STATUS_PATTERN.test(openTag[1] ?? '') ||
     !['loading', 'updating'].includes(status ?? '');
 
-  return { reasoning, answer, reasoningDone };
+  return {
+    reasoning: reconciled.reasoning,
+    answer: reconciled.answer,
+    reasoningDone,
+  };
 };
 
 /** 将思考时间线和正式回答拆成两个视觉区域，避免共享同一个 Markdown 灰色块。 */

@@ -21,8 +21,94 @@ export interface ParsedReasoningTrace {
   durationMs?: number;
 }
 
+export interface ExtractedReasoningTraceMarkers {
+  answer: string;
+  reasoning?: string;
+  hasTrace: boolean;
+}
+
+export interface ReconciledReasoningTrace {
+  reasoning: string;
+  answer: string;
+  hasInlineTrace: boolean;
+}
+
 const TRACE_MARKER_PATTERN =
   /\[keen-tool-event:([^\]\r\n]+)\]|\[keen-reasoning-duration:(\d+)\]/g;
+const TRACE_MARKER_PREFIXES = [
+  '[keen-tool-event:',
+  '[keen-reasoning-duration:',
+] as const;
+
+/** 流片段可能停在内部标记中间；在闭合方括号到达前不把半截协议显示给用户。 */
+const findPendingTraceMarker = (content: string): number => {
+  let pendingIndex = -1;
+
+  for (const prefix of TRACE_MARKER_PREFIXES) {
+    const index = content.lastIndexOf(prefix);
+    if (index > pendingIndex && content.indexOf(']', index) < 0) {
+      pendingIndex = index;
+    }
+  }
+
+  return pendingIndex;
+};
+
+/**
+ * 当实时 Provider 没有建立 `<think>` 区域时，从正文中抽离服务端的带外轨迹标记。
+ * 历史消息本来就会把 reasoningContent 包进 `<think>`，这个兼容层只处理实时乱序流。
+ */
+export const extractReasoningTraceMarkers = (
+  content: string,
+): ExtractedReasoningTraceMarkers => {
+  const answerParts: string[] = [];
+  const reasoningMarkers: string[] = [];
+  let cursor = 0;
+
+  for (const match of content.matchAll(TRACE_MARKER_PATTERN)) {
+    const matchIndex = match.index ?? 0;
+    answerParts.push(content.slice(cursor, matchIndex));
+    reasoningMarkers.push(match[0]);
+    cursor = matchIndex + match[0].length;
+  }
+
+  const tail = content.slice(cursor);
+  const pendingIndex = findPendingTraceMarker(tail);
+  answerParts.push(
+    pendingIndex >= 0 ? tail.slice(0, pendingIndex).trimEnd() : tail,
+  );
+
+  return {
+    answer: answerParts.join('').trim(),
+    reasoning:
+      reasoningMarkers.length > 0
+        ? reasoningMarkers.join('\n\n')
+        : undefined,
+    hasTrace: reasoningMarkers.length > 0 || pendingIndex >= 0,
+  };
+};
+
+/**
+ * DeepSeek Provider 可能先闭合 `<think>`，再把后到的工具事件追加进正文。
+ * 将这部分带外标记重新并入已有思考内容，确保实时流和刷新后的历史展示一致。
+ */
+export const reconcileReasoningTrace = (
+  reasoning: string,
+  answer: string,
+): ReconciledReasoningTrace => {
+  const inlineTrace = extractReasoningTraceMarkers(answer);
+  if (!inlineTrace.hasTrace) {
+    return { reasoning, answer, hasInlineTrace: false };
+  }
+
+  return {
+    reasoning: [reasoning.trim(), inlineTrace.reasoning]
+      .filter((value): value is string => Boolean(value))
+      .join('\n\n'),
+    answer: inlineTrace.answer,
+    hasInlineTrace: true,
+  };
+};
 
 const parseToolStep = (payload: string): ReasoningToolStep | undefined => {
   try {

@@ -7,20 +7,49 @@ import { LOCAL_STATE_ROOT } from './paths.ts';
 const MODEL_CONFIG_VERSION = 1;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-export const modelConfigSchema = z.object({
-  id: z.string().trim().min(1),
-  name: z.string().trim().min(1),
-  // provider 表示兼容协议而非模型厂商，用于选择对应的 LangChain 客户端。
-  provider: z.enum(['anthropic', 'openai']),
-  model: z.string().trim().min(1),
-  apiKeyEnv: z.string().regex(ENV_NAME_PATTERN),
-  baseUrl: z.string().url().optional(),
-  baseUrlEnv: z.string().regex(ENV_NAME_PATTERN).optional(),
-  temperature: z.number().min(0).max(1).default(0),
-  timeoutMs: z.number().int().positive().default(15_000),
-  maxRetries: z.number().int().min(0).max(10).default(1),
-  maxTokens: z.number().int().positive().optional(),
-});
+/**
+ * 当前已接入模型的最大输出长度（token）。
+ *
+ * Provider 的 `max_tokens` 不会因为模型升级自动取最大值，因此在服务端集中按
+ * 模型家族覆盖，避免各入口漏传后退回 SDK 的较小默认值。
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
+
+export const getMaximumOutputTokens = (
+  model: string,
+  configuredMaximum?: number,
+): number => {
+  const normalizedModel = model.trim().toLowerCase().split('/').at(-1) ?? '';
+
+  if (normalizedModel === 'qwen3.5-ocr') return 16_384;
+  if (normalizedModel === 'kimi-k3') return 1_048_576;
+  if (normalizedModel.startsWith('deepseek-v4')) return 393_216;
+  if (normalizedModel.startsWith('qwen3.8')) return 131_072;
+
+  // 未登记的新模型优先采用管理员明确填写的上限；没有配置时使用平台默认上限。
+  return configuredMaximum ?? DEFAULT_MAX_OUTPUT_TOKENS;
+};
+
+export const modelConfigSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    // provider 表示兼容协议而非模型厂商，用于选择对应的 LangChain 客户端。
+    provider: z.enum(['anthropic', 'openai']),
+    model: z.string().trim().min(1),
+    apiKeyEnv: z.string().regex(ENV_NAME_PATTERN),
+    baseUrl: z.string().url().optional(),
+    baseUrlEnv: z.string().regex(ENV_NAME_PATTERN).optional(),
+    temperature: z.number().min(0).max(1).default(0),
+    timeoutMs: z.number().int().positive().default(15_000),
+    maxRetries: z.number().int().min(0).max(10).default(1),
+    maxTokens: z.number().int().positive().optional(),
+  })
+  .transform((config) => ({
+    ...config,
+    // 已登记模型始终覆盖为真实上限，不允许旧配置或页面表单把它调低。
+    maxTokens: getMaximumOutputTokens(config.model, config.maxTokens),
+  }));
 
 export const modelRegistrySchema = z
   .object({
@@ -130,6 +159,11 @@ export const loadModelRegistry = async (
 
     if (!result.success) {
       throw new Error(formatModelValidationError(result.error));
+    }
+
+    // 读取旧配置时把缺失/过小的 maxTokens 以及其他默认值一次性写回磁盘。
+    if (JSON.stringify(parsed) !== JSON.stringify(result.data)) {
+      await saveModelRegistry(result.data, filePath);
     }
 
     return { registry: result.data, created: false };

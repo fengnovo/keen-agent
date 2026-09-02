@@ -10,6 +10,7 @@ export interface ModelConfig {
   temperature: number;
   timeoutMs: number;
   maxRetries: number;
+  /** 服务端按模型家族强制回填最大输出长度；新建模型时可以暂缺。 */
   maxTokens?: number;
 }
 

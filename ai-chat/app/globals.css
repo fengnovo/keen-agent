@@ -82,19 +82,23 @@ body {
   box-shadow: inset 0 0 0 1px var(--primary-color);
 }
 
-/* 允许 Markdown 在气泡、思考区和列表项中继续收缩。 */
+/*
+ * 允许 Markdown 和 ThoughtChain 的嵌套 Flex 节点继续收缩。
+ * 思考时间线是 Markdown 的祖先而不是后代，不能写成
+ * `.x-markdown-theme .reasoning-timeline`，否则长文本会按最小内容宽度撑开气泡。
+ */
 .x-markdown-theme,
-.x-markdown-theme
+.reasoning-timeline,
+.reasoning-timeline
   :where(
-    .reasoning-timeline,
     .ant-thought-chain-node,
     .ant-thought-chain-node-box,
+    .ant-thought-chain-node-header,
+    .ant-thought-chain-node-title,
     .ant-thought-chain-node-content,
-    .ant-thought-chain-node-content-box,
-    ul,
-    ol,
-    li
-  ) {
+    .ant-thought-chain-node-content-box
+  ),
+.x-markdown-theme :where(ul, ol, li) {
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;

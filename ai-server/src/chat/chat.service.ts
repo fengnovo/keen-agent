@@ -8,9 +8,11 @@ import { randomUUID } from 'node:crypto';
 import {
   createAgentRuntime,
   createChatModel,
+  isWebGenerationRequest,
   type AgentRuntime,
 } from '@keen-agent/ai-agent/agent';
 import type { ModelConfig } from '@keen-agent/ai-agent/model-config';
+import { MCP_TOOL_ERROR_PREFIX } from '@keen-agent/ai-agent/plugins';
 import { z } from 'zod';
 
 import {
@@ -174,14 +176,33 @@ const compactTraceText = (value: unknown): string | undefined => {
 };
 
 /** 工具参数只展示查询词、URL、路径等低风险摘要，避免把任意参数或密钥写入 UI 轨迹。 */
-const summarizeToolInput = (input: unknown): string | undefined => {
-  const direct = compactTraceText(input);
-  if (direct) return direct;
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return undefined;
+const summarizeToolInput = (
+  input: unknown,
+  toolName?: string,
+): string | undefined => {
+  let normalizedInput = input;
+
+  // 部分 Provider 把工具参数作为 JSON 字符串上报；先解析再选安全字段，避免
+  // write_file 的 content 被截取进可见的思考轨迹。
+  if (typeof input === 'string') {
+    try {
+      normalizedInput = JSON.parse(input) as unknown;
+    } catch {
+      return ['write_file', 'edit_file'].includes(toolName ?? '')
+        ? '正在写入源码文件'
+        : compactTraceText(input);
+    }
   }
 
-  const record = input as Record<string, unknown>;
+  if (
+    !normalizedInput ||
+    typeof normalizedInput !== 'object' ||
+    Array.isArray(normalizedInput)
+  ) {
+    return compactTraceText(normalizedInput);
+  }
+
+  const record = normalizedInput as Record<string, unknown>;
   for (const key of TOOL_INPUT_SUMMARY_KEYS) {
     const summary = compactTraceText(record[key]);
     if (summary) return summary;
@@ -209,6 +230,37 @@ const summarizeToolOutput = (output: unknown): string => {
   }
 
   return '调用完成';
+};
+
+/** 从 ToolMessage、content-and-artifact 二元组或纯文本中提取 MCP 失败摘要。 */
+const summarizeRecoverableToolError = (
+  output: unknown,
+  seen = new Set<object>(),
+): string | undefined => {
+  if (typeof output === 'string') {
+    const markerIndex = output.indexOf(MCP_TOOL_ERROR_PREFIX);
+    if (markerIndex < 0) return undefined;
+
+    return (
+      compactTraceText(
+        output.slice(markerIndex + MCP_TOOL_ERROR_PREFIX.length),
+      ) ?? '调用失败'
+    );
+  }
+
+  if (!output || typeof output !== 'object' || seen.has(output)) {
+    return undefined;
+  }
+  seen.add(output);
+
+  for (const value of Array.isArray(output)
+    ? output
+    : Object.values(output as Record<string, unknown>)) {
+    const summary = summarizeRecoverableToolError(value, seen);
+    if (summary) return summary;
+  }
+
+  return undefined;
 };
 
 const encodeTracePayload = (payload: ToolTraceEvent): string =>
@@ -506,6 +558,7 @@ export class ChatService {
             : await createAgentRuntime(model, {
                 thinkingEnabled: conversation.thinkingEnabled,
                 toolsEnabled: conversation.toolsEnabled,
+                webGenerationRequested: isWebGenerationRequest(userContent),
                 pluginRegistry,
                 sandbox: {
                   sessionId: `${conversation.id}-${userMessageId}`,
@@ -779,15 +832,19 @@ export class ChatService {
             callId,
             name,
             status: 'running',
-            inputSummary: summarizeToolInput(toolEvent.input),
+            inputSummary: summarizeToolInput(toolEvent.input, name),
           };
         } else if (toolEvent.event === 'on_tool_end') {
+          const recoverableError = summarizeRecoverableToolError(
+            toolEvent.output,
+          );
           trace = {
             type: 'tool',
             callId: resolveToolCall(name, providedCallId),
             name,
-            status: 'success',
-            outputSummary: summarizeToolOutput(toolEvent.output),
+            status: recoverableError ? 'error' : 'success',
+            outputSummary:
+              recoverableError ?? summarizeToolOutput(toolEvent.output),
           };
         } else if (toolEvent.event === 'on_tool_error') {
           trace = {

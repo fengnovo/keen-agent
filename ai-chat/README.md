@@ -110,6 +110,7 @@ pnpm dev
 ```
 
 默认访问地址为 [http://localhost:3000](http://localhost:3000)，Nest 服务默认监听 `http://127.0.0.1:3001/api`。
+开发脚本会等到 Nest 的 `/api/health` 检查通过后再启动 Next.js，避免首次打开页面时代理连接被拒绝。
 
 模型密钥配置在 `ai-agent/.env`，模型注册表保存在仓库根目录的 `.keen-agent/models.json`。不要在 `ai-chat` 中添加模型 API Key。
 

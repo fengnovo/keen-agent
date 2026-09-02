@@ -18,6 +18,78 @@ export interface LoadedMcpTools {
   close: () => Promise<void>;
 }
 
+/** 供上层识别“工具已失败，但 Agent 可继续运行”的结构化文本结果。 */
+export const MCP_TOOL_ERROR_PREFIX = '[keen-mcp-tool-error]';
+
+const formatMcpToolError = (
+  plugin: Pick<McpPluginConfig, 'name'>,
+  toolName: string,
+  error: unknown,
+): string => {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  let detail: string;
+
+  if (/current user is in debt/i.test(rawMessage)) {
+    detail = '远端服务账号欠费或额度不可用';
+  } else if (/\b401\b|unauthori[sz]ed|authentication/i.test(rawMessage)) {
+    detail = '远端服务鉴权失败';
+  } else if (/\b403\b|access denied|forbidden/i.test(rawMessage)) {
+    detail = '远端服务拒绝访问';
+  } else if (/\b429\b|too many requests|rate.?limit/i.test(rawMessage)) {
+    detail = '远端服务请求过于频繁';
+  } else if (/timeout|timed out/i.test(rawMessage)) {
+    detail = '远端服务响应超时';
+  } else if (
+    /terminated|econnreset|socket hang up|fetch failed|other side closed/i.test(
+      rawMessage,
+    )
+  ) {
+    detail = '远端服务连接意外中断';
+  } else {
+    detail = '远端工具执行异常';
+  }
+
+  return (
+    `${MCP_TOOL_ERROR_PREFIX} MCP 插件“${plugin.name}”的工具 ` +
+    `“${toolName}”调用失败：${detail}。` +
+    '请更换查询词后最多重试一次；若仍失败或已有其他可用结果，' +
+    '请继续完成回答并明确说明缺少的信息。'
+  );
+};
+
+/**
+ * deepagents 的工具中间件会把 MCP Adapter 抛出的 ToolException 继续向外抛，
+ * 从而让单个搜索失败终止整轮回答。MCP 工具本身固定返回
+ * content_and_artifact，因此将远端故障转换成同格式结果交还给模型处理。
+ */
+export const makeMcpToolRecoverable = (
+  plugin: Pick<McpPluginConfig, 'id' | 'name'>,
+  tool: McpTools[number],
+): McpTools[number] => {
+  const originalFunc = tool.func.bind(tool);
+
+  tool.func = (async (input, runManager, config) => {
+    try {
+      return await originalFunc(input, runManager, config);
+    } catch (error) {
+      // 这里不能用 config.signal.aborted 判断用户取消：单个工具的默认超时也会
+      // 把派生 signal 标记为 aborted。外层 Agent graph 仍会负责传播整轮取消。
+      const message = formatMcpToolError(plugin, tool.name, error);
+      console.warn('[mcp] tool call failed', {
+        pluginId: plugin.id,
+        toolName: tool.name,
+        message,
+      });
+
+      return tool.responseFormat === 'content_and_artifact'
+        ? [message, []]
+        : message;
+    }
+  }) as typeof tool.func;
+
+  return tool;
+};
+
 /**
  * MCP Adapter 的原始异常可能包含完整 URL、回退过程和底层堆栈。
  * 对聊天与管理页只暴露可行动且不包含连接地址/鉴权参数的摘要。
@@ -137,7 +209,9 @@ export const loadMcpTools = async (
         return {
           plugin,
           client,
-          tools: await client.getTools(),
+          tools: (await client.getTools()).map((tool) =>
+            makeMcpToolRecoverable(plugin, tool),
+          ),
         };
       } catch (error) {
         await client.close().catch(() => undefined);
