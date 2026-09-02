@@ -51,6 +51,16 @@ export class ChatController {
     response.flushHeaders();
     response.once('close', abortOnClose);
 
+    // Agent 等待 MCP 工具或模型首块时可能长时间没有数据；按固定间隔发送 SSE
+    // 注释行（冒号开头，EventSource 与前端解析器都会忽略），让 Next dev 代理等
+    // 中间链路的空闲超时不会误杀仍在运行的流。
+    const heartbeat = setInterval(() => {
+      if (!response.writableEnded && !response.destroyed) {
+        response.write(': ping\n\n');
+      }
+    }, 15_000);
+    heartbeat.unref();
+
     try {
       for await (const chunk of this.chatService.stream(
         prepared,
@@ -74,6 +84,7 @@ export class ChatController {
         );
       }
     } finally {
+      clearInterval(heartbeat);
       response.off('close', abortOnClose);
 
       // DeepSeekChatProvider 依赖 finish_reason 和 [DONE] 判断流已完整结束。
