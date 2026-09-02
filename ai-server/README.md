@@ -90,7 +90,7 @@ Backend 代替内存 StateBackend。最终文件必须写到 `/mnt/user-data/out
 连接，并关闭摄像头、麦克风、定位等浏览器权限；静态资源只为 opaque-origin iframe
 开放匿名 CORS，不授予页面访问父窗口或同源存储的能力。
 
-插件管理可以启动本地 MCP 进程并读取 Skill 文件，属于管理员能力。面向公网部署时应在反向代理或应用鉴权层保护 `/api/plugins`，不要开放给普通聊天用户。
+插件管理可以启动本地 MCP 进程、读取 Skill 文件，并通过 `npx` / `uvx` 在宿主机执行第三方 Skill 安装器，属于管理员能力。只应安装可信来源；面向公网部署时应在反向代理或应用鉴权层保护 `/api/plugins`，不要开放给普通聊天用户。
 
 MCP 的真实环境变量值只在 AI Server 进程内解析，API 返回和 JSON 文件中都只有变量名称。
 
@@ -105,6 +105,8 @@ MCP 的真实环境变量值只在 AI Server 进程内解析，API 返回和 JSO
 - `GET /api/plugins`
 - `GET /api/plugins/:id`
 - `POST /api/plugins`
+- `POST /api/plugins/test-config`
+- `POST /api/plugins/install-skills`
 - `PUT /api/plugins/:id`
 - `PATCH /api/plugins/:id/enabled`
 - `POST /api/plugins/:id/test`

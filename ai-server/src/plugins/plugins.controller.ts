@@ -32,6 +32,18 @@ export class PluginsController {
     return this.pluginsService.create(body);
   }
 
+  @Post('test-config')
+  @HttpCode(200)
+  testConfig(@Body() body: unknown) {
+    return this.pluginsService.testConfig(body);
+  }
+
+  @Post('install-skills')
+  @HttpCode(200)
+  installSkills(@Body() body: unknown) {
+    return this.pluginsService.installSkills(body);
+  }
+
   @Put(':id')
   update(@Param('id') id: string, @Body() body: unknown) {
     return this.pluginsService.update(id, body);

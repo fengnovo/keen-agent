@@ -66,14 +66,6 @@ export const mcpPluginSchema = z
     timeoutMs: z.number().int().min(1_000).max(300_000).default(30_000),
   })
   .superRefine((plugin, context) => {
-    if (plugin.transport === 'stdio' && !plugin.command) {
-      context.addIssue({
-        code: 'custom',
-        path: ['command'],
-        message: 'stdio MCP 必须配置启动命令',
-      });
-    }
-
     if (plugin.transport === 'http' && !plugin.url) {
       context.addIssue({
         code: 'custom',

@@ -320,7 +320,11 @@ export const ChatSide: React.FC<ChatSideProps> = ({
       )}
 
       {/* 模型与插件都是全局 Agent 配置，入口并列放在侧栏底部。 */}
-      <div className={styles.modelManagerEntry}>
+      <div
+        className={`${styles.modelManagerEntry} ${
+          collapsed ? styles.modelManagerEntryCollapsed : ''
+        }`}
+      >
         <Button
           block={!collapsed}
           type='text'

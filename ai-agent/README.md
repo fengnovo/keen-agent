@@ -84,7 +84,7 @@ ai-agent/
 ## 本地资源目录
 
 - `.skills/<name>/` 保存包含 `SKILL.md`、`scripts/`、`references/` 和 `assets/` 的完整 Skill。插件路径可以只填写 `<name>`，也可以填写 `ai-agent/.skills/<name>`。
-- `.mcp/<plugin-id>/` 保存本地 stdio MCP 包。配置中的相对 `cwd` 以该目录为基准；HTTP MCP 不需要本地目录。
+- `.mcp/<plugin-id>/` 保存本地 stdio MCP 包。配置中的相对 `cwd` 以该目录为基准；HTTP MCP 不需要本地目录。stdio 配置可以先不填写启动命令保存为草稿，但测试或运行前仍需补充。
 - `.sandbox/` 保存沙箱镜像定义；运行产生的临时工作区位于被忽略的 `.keen-agent/sandboxes/`。
 - `.keen-agent/plugins.json` 仍是启停状态和连接参数的共享索引，不保存 Skill 正文、MCP 源码或密钥。
 
@@ -148,7 +148,9 @@ ai-agent/
 - `mcp`：通过 `@langchain/mcp-adapters` 连接的 stdio 或 Streamable HTTP MCP 服务。
 - `skill`：位于 `.skills/` 或显式路径中的完整 Agent Skills 目录；必须包含 `SKILL.md`，且目录名称与 frontmatter 中的 `name` 一致。
 
-系统插件可启停但不能删除或在线修改实现。MCP 和 Skill 可以从 Web 管理页增删改查和测试。MCP 配置只保存环境变量名称：stdio 使用“子进程变量 → 宿主变量”，HTTP 使用“Header → 宿主变量”映射，真实密钥仍保存在 `ai-agent/.env`。
+系统插件可启停但不能删除或在线修改实现。MCP 和 Skill 可以从 Web 管理页增删改查和测试；MCP 支持表单或单服务 `mcpServers` JSON，并可在保存前测试草稿连接。MCP 配置只保存环境变量名称：stdio 使用“子进程变量 → 宿主变量”，HTTP 使用“Header → 宿主变量”映射，真实密钥仍保存在 `ai-agent/.env`。
+
+Skills 页还可以运行 `npx` / `uvx` 安装命令。命令固定在 `ai-agent` 下通过参数数组执行，不经过宿主 shell；服务端只扫描项目内约定的 Skills 目录，使用同一加载器校验本次新增的目录，再自动写入插件注册表。安装器本身仍是第三方宿主代码，因此该入口必须按管理员能力保护并只使用可信来源。
 
 多个 MCP 会按插件建立独立连接。某个可选 MCP 出现鉴权、欠费、超时或网络故障时，只移除该插件本轮的工具并记录警告，不再阻止整个 Agent 初始化；模型会被明确告知不得伪造该插件的实时结果。管理页“测试”仍会对被测插件返回失败，并显示经过脱敏的具体原因。
 

@@ -67,6 +67,20 @@ export interface PluginTestResult {
   };
 }
 
+export type SkillInstallRunner = 'npx' | 'uvx';
+
+export interface SkillInstallResult {
+  message: string;
+  output: string;
+  installed: Array<{
+    id: string;
+    name: string;
+    description: string;
+    path: string;
+  }>;
+  registry: PluginRegistry;
+}
+
 const PLUGIN_API_PATH = '/api/ai-server/plugins';
 
 const getErrorMessage = (payload: unknown, fallback: string): string => {
@@ -136,6 +150,20 @@ export const setPluginEnabled = (id: string, enabled: boolean) =>
 export const testPlugin = (id: string) =>
   request<PluginTestResult>(`/${encodeURIComponent(id)}/test`, {
     method: 'POST',
+  });
+
+/** 测试尚未保存的 MCP 配置，不修改插件注册表。 */
+export const testPluginConfig = (plugin: McpPluginConfig) =>
+  request<PluginTestResult>('/test-config', {
+    method: 'POST',
+    body: JSON.stringify(plugin),
+  });
+
+/** 通过受限的包执行器下载安装 Skill，并自动注册检测到的新 Skill。 */
+export const installSkills = (runner: SkillInstallRunner, args: string[]) =>
+  request<SkillInstallResult>('/install-skills', {
+    method: 'POST',
+    body: JSON.stringify({ runner, args }),
   });
 
 export const deletePlugin = (id: string) =>

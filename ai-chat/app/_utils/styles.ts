@@ -163,10 +163,13 @@ export const useStyle = createStyles(({ token, css }) => {
       flex: none;
       padding: 12px 0 16px;
       display: flex;
-      flex-direction: column;
-      gap: 2px;
+      flex-direction: row;
+      gap: 4px;
 
       .ant-btn {
+        flex: 1;
+        min-width: 0;
+        padding-inline: 6px;
         color: ${token.colorTextSecondary};
       }
 
@@ -179,6 +182,14 @@ export const useStyle = createStyles(({ token, css }) => {
 
       @media (max-width: 767px) {
         padding-bottom: max(16px, env(safe-area-inset-bottom));
+      }
+    `,
+    /** 收起后仍保持单列圆形入口，避免两个按钮挤在 44px 宽度内。 */
+    modelManagerEntryCollapsed: css`
+      flex-direction: column;
+
+      .ant-btn {
+        flex: none;
       }
     `,
     /** 聊天区域样式 */

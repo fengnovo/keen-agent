@@ -9,6 +9,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Segmented,
   Select,
   Space,
   Switch,
@@ -23,6 +24,7 @@ import {
   ApiOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -34,15 +36,24 @@ import {
   listPlugins,
   setPluginEnabled,
   testPlugin,
+  testPluginConfig,
   updatePlugin,
   type McpPluginConfig,
   type PluginConfig,
   type PluginRegistry,
   type SkillPluginConfig,
 } from '../_utils/plugin-api';
+import {
+  MCP_JSON_EXAMPLE,
+  formatMcpJson,
+  parseMcpJson,
+} from '../_utils/mcp-config-json';
+import { SkillInstallModal } from './SkillInstallModal';
 
 const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const JSON_OBJECT_EXAMPLE = '{\n  "Authorization": "MCP_API_TOKEN"\n}';
+
+type McpEditorMode = 'form' | 'json';
 
 interface PluginManagerModalProps {
   open: boolean;
@@ -183,13 +194,18 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = ({
   const [loadError, setLoadError] = useState('');
   const [pendingAction, setPendingAction] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
+  const [mcpEditorMode, setMcpEditorMode] =
+    useState<McpEditorMode>('form');
+  const [mcpJson, setMcpJson] = useState(MCP_JSON_EXAMPLE);
+  const [skillInstallerOpen, setSkillInstallerOpen] = useState(false);
   const [editingPlugin, setEditingPlugin] = useState<
     McpPluginConfig | SkillPluginConfig
   >();
   // setFieldsValue 发生在编辑弹窗挂载前，首次渲染用表单当前值兜底。
   const pluginType = Form.useWatch('type', form) ?? form.getFieldValue('type');
   const mcpTransport =
-    Form.useWatch('transport', form) ?? form.getFieldValue('transport');
+    Form.useWatch('transport', { form, preserve: true }) ??
+    form.getFieldValue('transport');
 
   const loadRegistry = useCallback(async () => {
     setLoading(true);
@@ -205,6 +221,8 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = ({
 
   const openCreateEditor = (type: 'mcp' | 'skill' = 'mcp') => {
     setEditingPlugin(undefined);
+    setMcpEditorMode('form');
+    setMcpJson(MCP_JSON_EXAMPLE);
     form.resetFields();
     form.setFieldsValue({
       type,
@@ -223,6 +241,8 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = ({
 
   const openEditEditor = (plugin: McpPluginConfig | SkillPluginConfig) => {
     setEditingPlugin(plugin);
+    setMcpEditorMode('form');
+    if (plugin.type === 'mcp') setMcpJson(formatMcpJson(plugin));
     form.resetFields();
     form.setFieldsValue(toFormValues(plugin));
     setEditorOpen(true);
@@ -240,6 +260,74 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = ({
       messageApi.success(editingPlugin ? '插件已更新' : '插件已创建');
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : '保存插件失败');
+    } finally {
+      setPendingAction('');
+    }
+  };
+
+  const submitMcpJson = async () => {
+    setPendingAction('save');
+    try {
+      const plugin = parseMcpJson(mcpJson);
+      const nextRegistry = editingPlugin
+        ? await updatePlugin(editingPlugin.id, plugin)
+        : await createPlugin(plugin);
+      setRegistry(nextRegistry);
+      setEditorOpen(false);
+      messageApi.success(editingPlugin ? '插件已更新' : '插件已创建');
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '保存插件失败');
+    } finally {
+      setPendingAction('');
+    }
+  };
+
+  const changeMcpEditorMode = (mode: McpEditorMode) => {
+    if (mode === mcpEditorMode) return;
+
+    if (mode === 'json') {
+      try {
+        const values = form.getFieldsValue();
+        if (values.serverName?.trim()) {
+          setMcpJson(formatMcpJson(normalizePlugin(values) as McpPluginConfig));
+        }
+      } catch {
+        // 表单尚未填完时保留示例 JSON，让用户直接从 JSON 模式开始配置。
+      }
+    } else {
+      try {
+        form.setFieldsValue(toFormValues(parseMcpJson(mcpJson)));
+      } catch (error) {
+        messageApi.error(
+          error instanceof Error ? error.message : '无法解析 MCP JSON',
+        );
+        return;
+      }
+    }
+
+    setMcpEditorMode(mode);
+  };
+
+  const handleDraftTest = async () => {
+    setPendingAction('test:draft');
+    try {
+      const plugin =
+        mcpEditorMode === 'json'
+          ? parseMcpJson(mcpJson)
+          : normalizePlugin(
+              await form.validateFields(),
+            ) as McpPluginConfig;
+      if (plugin.type !== 'mcp') throw new Error('只能测试 MCP 配置');
+
+      const result = await testPluginConfig(plugin);
+      const details = result.tools?.length
+        ? `：${result.tools.join('、')}`
+        : '';
+      messageApi.success(`${result.message}${details}`, 5);
+    } catch (error) {
+      messageApi.error(
+        error instanceof Error ? error.message : 'MCP 连接测试失败',
+      );
     } finally {
       setPendingAction('');
     }
@@ -446,6 +534,14 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = ({
               >
                 刷新
               </Button>
+              {activeTab === 'skill' ? (
+                <Button
+                  icon={<DownloadOutlined />}
+                  onClick={() => setSkillInstallerOpen(true)}
+                >
+                  脚本安装
+                </Button>
+              ) : null}
               <Button
                 type='primary'
                 icon={<PlusOutlined />}
@@ -480,17 +576,41 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = ({
       <Modal
         open={editorOpen}
         title={editingPlugin ? '编辑插件' : '新建插件'}
-        okText='保存'
-        cancelText='取消'
-        confirmLoading={pendingAction === 'save'}
-        onOk={() => form.submit()}
         onCancel={() => setEditorOpen(false)}
         destroyOnHidden
+        footer={
+          <>
+            <Button onClick={() => setEditorOpen(false)}>取消</Button>
+            {pluginType === 'mcp' ? (
+              <Button
+                icon={<CheckCircleOutlined />}
+                loading={pendingAction === 'test:draft'}
+                disabled={pendingAction === 'save'}
+                onClick={() => void handleDraftTest()}
+              >
+                测试连接
+              </Button>
+            ) : null}
+            <Button
+              type='primary'
+              loading={pendingAction === 'save'}
+              disabled={pendingAction === 'test:draft'}
+              onClick={() => {
+                if (pluginType === 'mcp' && mcpEditorMode === 'json') {
+                  void submitMcpJson();
+                } else {
+                  form.submit();
+                }
+              }}
+            >
+              保存
+            </Button>
+          </>
+        }
       >
         <Form
           form={form}
           layout='vertical'
-          preserve={false}
           initialValues={{
             type: 'mcp',
             enabled: true,
@@ -511,108 +631,183 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = ({
               ]}
             />
           </Form.Item>
-          <Form.Item
-            name='id'
-            label='插件 ID'
-            rules={[
-              { required: true, message: '请输入插件 ID' },
-              { pattern: PLUGIN_ID_PATTERN, message: '仅支持小写字母、数字和连字符' },
-            ]}
-          >
-            <Input placeholder='weather-mcp' />
-          </Form.Item>
-          <Form.Item name='name' label='名称' rules={[{ required: true }]}>
-            <Input placeholder='天气查询' />
-          </Form.Item>
-          <Form.Item name='description' label='说明' rules={[{ required: true }]}>
-            <Input.TextArea rows={2} placeholder='告诉 Agent 这个插件适合完成什么任务' />
-          </Form.Item>
-          <Form.Item name='enabled' label='创建后启用' valuePropName='checked'>
-            <Switch />
-          </Form.Item>
-
-          {pluginType === 'skill' ? (
-            <Form.Item
-              name='path'
-              label='SKILL.md 或目录路径'
-              tooltip='可只填 .skills 下的 Skill 名称；目录名必须与 SKILL.md 的 name 一致'
-              rules={[{ required: true }]}
-            >
-              <Input placeholder='example-skill' />
+          {pluginType === 'mcp' ? (
+            <Form.Item label='配置方式'>
+              <Segmented<McpEditorMode>
+                block
+                value={mcpEditorMode}
+                options={[
+                  { label: '表单配置', value: 'form' },
+                  { label: 'JSON 配置', value: 'json' },
+                ]}
+                onChange={changeMcpEditorMode}
+              />
             </Form.Item>
           ) : null}
 
-          {pluginType === 'mcp' ? (
+          {pluginType === 'mcp' && mcpEditorMode === 'json' ? (
             <>
-              <Form.Item
-                name='serverName'
-                label='MCP 服务名称'
-                rules={[{ required: true }]}
-              >
-                <Input prefix={<ApiOutlined />} placeholder='weather' />
-              </Form.Item>
-              <Form.Item name='transport' label='传输方式' rules={[{ required: true }]}>
-                <Select
-                  options={[
-                    { label: 'stdio（本地进程）', value: 'stdio' },
-                    { label: 'Streamable HTTP', value: 'http' },
-                  ]}
-                />
-              </Form.Item>
-              {mcpTransport === 'http' ? (
-                <>
-                  <Form.Item
-                    name='url'
-                    label='服务地址'
-                    rules={[{ required: true, type: 'url' }]}
-                  >
-                    <Input placeholder='https://example.com/mcp' />
-                  </Form.Item>
-                  <Form.Item
-                    name='headerEnvText'
-                    label='Header → 环境变量映射（JSON）'
-                    tooltip='值是 AI Server 中的环境变量名称，不是密钥本身'
-                  >
-                    <Input.TextArea rows={4} placeholder={JSON_OBJECT_EXAMPLE} />
-                  </Form.Item>
-                </>
-              ) : (
-                <>
-                  <Form.Item name='command' label='启动命令' rules={[{ required: true }]}>
-                    <Input placeholder='npx' />
-                  </Form.Item>
-                  <Form.Item name='argsText' label='命令参数（每行一个）'>
-                    <Input.TextArea
-                      rows={4}
-                      placeholder={
-                        '-y\n@modelcontextprotocol/server-filesystem\n/path'
-                      }
-                    />
-                  </Form.Item>
-                  <Form.Item name='cwd' label='工作目录（可选）'>
-                    <Input placeholder='.（相对于 .mcp/<插件 ID>/）' />
-                  </Form.Item>
-                  <Form.Item
-                    name='envVarsText'
-                    label='子进程变量 → 宿主环境变量映射（JSON）'
-                    tooltip='例如 { "API_KEY": "WEATHER_API_KEY" }'
-                  >
-                    <Input.TextArea rows={4} placeholder={'{\n  "API_KEY": "WEATHER_API_KEY"\n}'} />
-                  </Form.Item>
-                </>
-              )}
-              <Form.Item name='timeoutMs' label='工具超时（毫秒）'>
-                <InputNumber
-                  min={1_000}
-                  max={300_000}
-                  step={1_000}
-                  style={{ width: '100%' }}
+              <Alert
+                showIcon
+                type='info'
+                title='支持单个 mcpServers 服务或完整 MCP 插件对象'
+                description='env 与 headers 的值只填写宿主环境变量名，支持 ${ENV_NAME} 占位符；不会保存真实密钥。'
+                style={{ marginBottom: 16 }}
+              />
+              <Form.Item label='MCP JSON' required>
+                <Input.TextArea
+                  value={mcpJson}
+                  rows={18}
+                  spellCheck={false}
+                  onChange={(event) => setMcpJson(event.target.value)}
                 />
               </Form.Item>
             </>
-          ) : null}
+          ) : (
+            <>
+              <Form.Item
+                name='id'
+                label='插件 ID'
+                rules={[
+                  { required: true, message: '请输入插件 ID' },
+                  {
+                    pattern: PLUGIN_ID_PATTERN,
+                    message: '仅支持小写字母、数字和连字符',
+                  },
+                ]}
+              >
+                <Input placeholder='weather-mcp' />
+              </Form.Item>
+              <Form.Item name='name' label='名称' rules={[{ required: true }]}>
+                <Input placeholder='天气查询' />
+              </Form.Item>
+              <Form.Item
+                name='description'
+                label='说明'
+                rules={[{ required: true }]}
+              >
+                <Input.TextArea
+                  rows={2}
+                  placeholder='告诉 Agent 这个插件适合完成什么任务'
+                />
+              </Form.Item>
+              <Form.Item
+                name='enabled'
+                label='创建后启用'
+                valuePropName='checked'
+              >
+                <Switch />
+              </Form.Item>
+
+              {pluginType === 'skill' ? (
+                <Form.Item
+                  name='path'
+                  label='SKILL.md 或目录路径'
+                  tooltip='可只填 .skills 下的 Skill 名称；目录名必须与 SKILL.md 的 name 一致'
+                  rules={[{ required: true }]}
+                >
+                  <Input placeholder='example-skill' />
+                </Form.Item>
+              ) : null}
+
+              {pluginType === 'mcp' ? (
+                <>
+                  <Form.Item
+                    name='serverName'
+                    label='MCP 服务名称'
+                    rules={[{ required: true }]}
+                  >
+                    <Input prefix={<ApiOutlined />} placeholder='weather' />
+                  </Form.Item>
+                  <Form.Item
+                    name='transport'
+                    label='传输方式'
+                    rules={[{ required: true }]}
+                  >
+                    <Select
+                      options={[
+                        { label: 'stdio（本地进程）', value: 'stdio' },
+                        { label: 'Streamable HTTP', value: 'http' },
+                      ]}
+                    />
+                  </Form.Item>
+                  {mcpTransport === 'http' ? (
+                    <>
+                      <Form.Item
+                        name='url'
+                        label='服务地址'
+                        rules={[{ required: true, type: 'url' }]}
+                      >
+                        <Input placeholder='https://example.com/mcp' />
+                      </Form.Item>
+                      <Form.Item
+                        name='headerEnvText'
+                        label='Header → 环境变量映射（JSON）'
+                        tooltip='值是 AI Server 中的环境变量名称，不是密钥本身'
+                      >
+                        <Input.TextArea
+                          rows={4}
+                          placeholder={JSON_OBJECT_EXAMPLE}
+                        />
+                      </Form.Item>
+                    </>
+                  ) : (
+                    <>
+                      <Form.Item
+                        name='command'
+                        label='启动命令（可选）'
+                        tooltip='可以先留空保存；测试或运行 stdio MCP 前需要补充启动命令'
+                      >
+                        <Input placeholder='npx' />
+                      </Form.Item>
+                      <Form.Item
+                        name='argsText'
+                        label='命令参数（每行一个）'
+                      >
+                        <Input.TextArea
+                          rows={4}
+                          placeholder={
+                            '-y\n@modelcontextprotocol/server-filesystem\n/path'
+                          }
+                        />
+                      </Form.Item>
+                      <Form.Item name='cwd' label='工作目录（可选）'>
+                        <Input placeholder='.（相对于 .mcp/<插件 ID>/）' />
+                      </Form.Item>
+                      <Form.Item
+                        name='envVarsText'
+                        label='子进程变量 → 宿主环境变量映射（JSON）'
+                        tooltip='例如 { "API_KEY": "WEATHER_API_KEY" }'
+                      >
+                        <Input.TextArea
+                          rows={4}
+                          placeholder={'{\n  "API_KEY": "WEATHER_API_KEY"\n}'}
+                        />
+                      </Form.Item>
+                    </>
+                  )}
+                  <Form.Item name='timeoutMs' label='工具超时（毫秒）'>
+                    <InputNumber
+                      min={1_000}
+                      max={300_000}
+                      step={1_000}
+                      style={{ width: '100%' }}
+                    />
+                  </Form.Item>
+                </>
+              ) : null}
+            </>
+          )}
         </Form>
       </Modal>
+
+      {skillInstallerOpen ? (
+        <SkillInstallModal
+          open
+          onClose={() => setSkillInstallerOpen(false)}
+          onRegistryChange={setRegistry}
+        />
+      ) : null}
     </>
   );
 };
