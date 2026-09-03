@@ -36,10 +36,10 @@ import {
 const loading = createLoading();
 
 const getAgentTimeoutMs = (): number => {
-  const value = Number(process.env.AI_AGENT_TIMEOUT_MS || 5 * 60_000);
-  return Number.isInteger(value) && value >= 10_000 && value <= 30 * 60_000
+  const value = Number(process.env.AI_AGENT_TIMEOUT_MS || 20 * 60_000);
+  return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
     ? value
-    : 5 * 60_000;
+    : 20 * 60_000;
 };
 
 const createCliAgentRuntime = (model: ModelConfig) =>

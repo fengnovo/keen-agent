@@ -38,13 +38,18 @@ const MAX_IMAGE_ANALYSIS_LENGTH = 20_000;
 const DEFAULT_VISION_MODEL_ID = 'qwen3.5-ocr';
 const IMAGE_DATA_URL_PATTERN =
   /^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
-const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Agent 运行总超时（毫秒）。覆盖多轮工具调用 + 多轮模型请求的完整 Agent 运行，
+ * 不同于模型单次请求的 timeoutMs。写整份源码文件或复杂多轮交互任务可能跑很久，
+ * 这里设为 20 分钟，上限放宽到 60 分钟。
+ */
+const DEFAULT_AGENT_TIMEOUT_MS = 20 * 60_000;
 
 const getAgentTimeoutMs = (): number => {
   const value = Number(
     process.env.AI_AGENT_TIMEOUT_MS || DEFAULT_AGENT_TIMEOUT_MS,
   );
-  return Number.isInteger(value) && value >= 10_000 && value <= 30 * 60_000
+  return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
     ? value
     : DEFAULT_AGENT_TIMEOUT_MS;
 };

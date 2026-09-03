@@ -18,16 +18,16 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
 /**
  * 单次模型请求的默认超时（毫秒）。
  *
- * Agent 场景下单次要长推理或整份文件流式输出，旧版 15s 会在生成途中被
- * AbortSignal 中止（“The operation was aborted due to timeout”）。这里放宽到
- * 5 分钟，与前端 310s 的整体流式超时留出余量。
+ * Agent 场景下单次要长推理或整份文件流式输出（如写一整个官网页面），生成
+ * 可能持续数分钟。LangChain 的 timeout 是整个流式请求的固定总时限（不是
+ * 空闲超时），设为 10 分钟覆盖绝大多数单轮生成场景。
  */
-export const DEFAULT_MODEL_TIMEOUT_MS = 300_000;
+export const DEFAULT_MODEL_TIMEOUT_MS = 600_000;
 
 /**
- * 低于该值的总超时对流式 Agent 任务必然误杀，视为旧版默认值，加载时自动升级。
+ * 低于或等于该值的总超时对流式 Agent 任务必然误杀，视为旧版默认值，加载时自动升级。
  */
-export const LEGACY_MODEL_TIMEOUT_FLOOR_MS = 60_000;
+export const LEGACY_MODEL_TIMEOUT_FLOOR_MS = 300_000;
 
 export const getMaximumOutputTokens = (
   model: string,
@@ -64,7 +64,7 @@ export const modelConfigSchema = z
     // 旧版 15s 默认值对长推理/整份文件的流式生成必然误超时；低于下限的配置
     // 自动升级为新默认值，用户显式设置的较大超时保持不变。
     timeoutMs:
-      config.timeoutMs < LEGACY_MODEL_TIMEOUT_FLOOR_MS
+      config.timeoutMs <= LEGACY_MODEL_TIMEOUT_FLOOR_MS
         ? DEFAULT_MODEL_TIMEOUT_MS
         : config.timeoutMs,
     // 已登记模型始终覆盖为真实上限，不允许旧配置或页面表单把它调低。
