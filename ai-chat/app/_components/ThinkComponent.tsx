@@ -99,7 +99,7 @@ export const ThinkComponent: React.FC<ThinkComponentProps> = React.memo(
         }),
       [className, isDone, lastStepIndex, trace.steps],
     );
-    const duration = trace.durationMs
+    const duration = isDone && trace.durationMs
       ? `（用时 ${formatReasoningDuration(trace.durationMs)}）`
       : '';
     const open = !isDone || expanded;
@@ -108,6 +108,7 @@ export const ThinkComponent: React.FC<ThinkComponentProps> = React.memo(
       <details
         className='reasoning-panel'
         open={open}
+        aria-busy={!isDone}
         onToggle={(event) => {
           if (isDone) setExpanded(event.currentTarget.open);
         }}
@@ -119,9 +120,9 @@ export const ThinkComponent: React.FC<ThinkComponentProps> = React.memo(
           }}
         >
           <span className='reasoning-panel-symbol' aria-hidden='true'>
-            ✧
+            {isDone ? '✧' : <LoadingOutlined spin />}
           </span>
-          <span>{isDone ? `已思考${duration}` : '思考中…'}</span>
+          <span>{isDone ? `已思考${duration}` : '生成中…'}</span>
           <DownOutlined className='reasoning-panel-chevron' />
         </summary>
 

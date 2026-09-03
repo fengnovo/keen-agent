@@ -4,6 +4,7 @@ import React from 'react';
 
 import {
   extractReasoningTraceMarkers,
+  isReasoningStreamDone,
   reconcileReasoningTrace,
 } from '../_utils/reasoning-trace';
 import { MarkdownContent } from './MarkdownContent';
@@ -21,14 +22,14 @@ interface AssistantContentParts {
   reasoningDone: boolean;
 }
 
-const THINK_OPEN_PATTERN = /<think\b([^>]*)>/i;
-const THINK_DONE_STATUS_PATTERN = /\bstatus\s*=\s*["']done["']/i;
+const THINK_OPEN_PATTERN = /<think\b[^>]*>/i;
 const THINK_CLOSE_TAG = '</think>';
 
 const splitAssistantContent = (
   content: string,
   status?: string,
 ): AssistantContentParts => {
+  const reasoningDone = isReasoningStreamDone(status);
   const openTag = THINK_OPEN_PATTERN.exec(content);
   if (!openTag || openTag.index === undefined) {
     const inlineTrace = extractReasoningTraceMarkers(content);
@@ -36,7 +37,7 @@ const splitAssistantContent = (
       return {
         reasoning: inlineTrace.reasoning ?? '',
         answer: inlineTrace.answer,
-        reasoningDone: !['loading', 'updating'].includes(status ?? ''),
+        reasoningDone,
       };
     }
 
@@ -58,10 +59,6 @@ const splitAssistantContent = (
     .filter(Boolean)
     .join('\n\n');
   const reconciled = reconcileReasoningTrace(initialReasoning, initialAnswer);
-  const reasoningDone =
-    hasClosingTag ||
-    THINK_DONE_STATUS_PATTERN.test(openTag[1] ?? '') ||
-    !['loading', 'updating'].includes(status ?? '');
 
   return {
     reasoning: reconciled.reasoning,

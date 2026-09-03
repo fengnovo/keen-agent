@@ -7,7 +7,11 @@ import { stdin as input, stdout as output } from 'node:process';
 import { select } from '@inquirer/prompts';
 import { isBaseMessage } from '@langchain/core/messages';
 
-import { createAgentRuntime } from '../core/agent.ts';
+import {
+  createAgentRuntime,
+  createLivenessCallback,
+  type LivenessPhase,
+} from '../core/agent.ts';
 import { publishLocalArtifact } from '../sandbox/index.ts';
 import {
   CONVERSATION_FILE,
@@ -35,11 +39,20 @@ import {
 // 加载动画实例：用于在等待模型响应时展示动态进度
 const loading = createLoading();
 
-const getAgentTimeoutMs = (): number => {
-  const value = Number(process.env.AI_AGENT_TIMEOUT_MS || 20 * 60_000);
+const getModelGeneratingTimeoutMs = (): number => {
+  const value = Number(
+    process.env.AI_AGENT_MODEL_TIMEOUT_MS || 15 * 60_000,
+  );
   return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
     ? value
-    : 20 * 60_000;
+    : 15 * 60_000;
+};
+
+const getIdleTimeoutMs = (): number => {
+  const value = Number(process.env.AI_AGENT_IDLE_TIMEOUT_MS || 3 * 60_000);
+  return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
+    ? value
+    : 3 * 60_000;
 };
 
 const createCliAgentRuntime = (model: ModelConfig) =>
@@ -313,17 +326,24 @@ export const runConversation = async () => {
 
     loading.start('正在等待模型响应...');
 
-    // 空闲超时：每次收到 event 重置，真卡死才 abort
+    // 两级超时：model-generating 宽裕（15 min），idle 短（3 min）
     const idleController = new AbortController();
-    let idleTimer: NodeJS.Timeout | undefined;
-    const resetIdleTimer = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(
-        () => idleController.abort(),
-        getAgentTimeoutMs(),
-      );
+    let timer: NodeJS.Timeout | undefined;
+    let currentPhase: LivenessPhase = 'idle';
+
+    const armTimer = (phase: LivenessPhase) => {
+      currentPhase = phase;
+      if (timer) clearTimeout(timer);
+      const ms =
+        phase === 'model-generating'
+          ? getModelGeneratingTimeoutMs()
+          : getIdleTimeoutMs();
+      timer = setTimeout(() => idleController.abort(), ms);
     };
-    resetIdleTimer();
+    armTimer('idle');
+
+    // LangChain callback：token 级别活跃信号，弥补 stream event 稀疏
+    const livenessCallback = createLivenessCallback((phase) => armTimer(phase));
 
     try {
       // 每轮只提交新增的用户消息，历史由 checkpointer 根据 thread_id 自动恢复
@@ -342,13 +362,13 @@ export const runConversation = async () => {
         {
           configurable: { thread_id: threadId },
           streamMode: ['messages', 'tools'],
-          // 服务端同样的空闲超时策略：活跃运行的 Agent 永不被掐断
           signal: idleController.signal,
+          callbacks: [livenessCallback],
         },
       );
 
       for await (const event of stream) {
-        resetIdleTimer();
+        armTimer(currentPhase);
         if (!Array.isArray(event) || event.length < 2) continue;
         const [mode, payload] = event;
         loading.stop();
@@ -416,7 +436,7 @@ export const runConversation = async () => {
       console.error(errorDetails);
     } finally {
       loading.stop();
-      if (idleTimer) clearTimeout(idleTimer);
+      if (timer) clearTimeout(timer);
     }
   }
 };

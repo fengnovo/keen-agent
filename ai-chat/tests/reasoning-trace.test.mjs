@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   extractReasoningTraceMarkers,
+  isReasoningStreamDone,
   parseReasoningTrace,
   reconcileReasoningTrace,
 } from '../app/_utils/reasoning-trace.ts';
@@ -94,4 +95,12 @@ test('leaves ordinary assistant content unchanged', () => {
     reasoning: undefined,
     hasTrace: false,
   });
+});
+
+test('keeps reasoning in loading state until the whole response settles', () => {
+  assert.equal(isReasoningStreamDone('loading'), false);
+  assert.equal(isReasoningStreamDone('updating'), false);
+  assert.equal(isReasoningStreamDone('success'), true);
+  assert.equal(isReasoningStreamDone('error'), true);
+  assert.equal(isReasoningStreamDone('abort'), true);
 });

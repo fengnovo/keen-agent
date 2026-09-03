@@ -33,6 +33,10 @@ export interface ReconciledReasoningTrace {
   hasInlineTrace: boolean;
 }
 
+/** 思考面板必须等整条助手消息停止流式更新后，才能进入最终完成态。 */
+export const isReasoningStreamDone = (status?: string): boolean =>
+  status !== 'loading' && status !== 'updating';
+
 const TRACE_MARKER_PATTERN =
   /\[keen-tool-event:([^\]\r\n]+)\]|\[keen-reasoning-duration:(\d+)\]/g;
 const TRACE_MARKER_PREFIXES = [

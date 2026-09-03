@@ -3,6 +3,7 @@
 
 import { createDeepAgent } from 'deepagents';
 import { ChatAnthropic } from '@langchain/anthropic';
+import { type CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import { MemorySaver } from '@langchain/langgraph-checkpoint';
 import { ChatOpenAI } from '@langchain/openai';
 import {
@@ -143,6 +144,35 @@ export interface AgentRuntime {
   collectPreviews: () => Promise<PublishedPreview[]>;
   close: () => Promise<void>;
 }
+
+/**
+ * Liveness 信号阶段：
+ * - `model-generating`：模型正在生成（含 thinking / tool-call args），
+ *   部分供应商不流式输出 tool-call 参数，此时 stream 不会有 event，
+ *   但 callback 仍会触发 handleLLMStart / handleLLMNewToken。
+ * - `idle`：模型回合结束、等待下一步（工具执行或下一轮模型调用），
+ *   短时间无响应是正常的，但持续静默应被视为卡死。
+ */
+export type LivenessPhase = 'model-generating' | 'idle';
+
+export type LivenessPulse = (phase: LivenessPhase) => void;
+
+/**
+ * 创建 LangChain callback，在模型 token 级别上报活跃信号。
+ * 用于在 stream event 稀疏时（如供应商不流式 tool-call 参数）
+ * 仍能区分"模型正在生成"与"真正卡死"。
+ */
+export const createLivenessCallback = (
+  pulse: LivenessPulse,
+): CallbackHandlerMethods => ({
+  handleLLMStart: () => pulse('model-generating'),
+  handleChatModelStart: () => pulse('model-generating'),
+  handleLLMNewToken: () => pulse('model-generating'),
+  handleChatModelStreamEvent: () => pulse('model-generating'),
+  handleLLMEnd: () => pulse('idle'),
+  handleToolStart: () => pulse('idle'),
+  handleToolEnd: () => pulse('idle'),
+});
 
 const toSkillFiles = (skills: LoadedSkill[]): AgentRuntime['skillFiles'] => {
   if (skills.length === 0) return undefined;
