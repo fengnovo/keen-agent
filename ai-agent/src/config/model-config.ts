@@ -15,6 +15,20 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
 
+/**
+ * 单次模型请求的默认超时（毫秒）。
+ *
+ * Agent 场景下单次要长推理或整份文件流式输出，旧版 15s 会在生成途中被
+ * AbortSignal 中止（“The operation was aborted due to timeout”）。这里放宽到
+ * 5 分钟，与前端 310s 的整体流式超时留出余量。
+ */
+export const DEFAULT_MODEL_TIMEOUT_MS = 300_000;
+
+/**
+ * 低于该值的总超时对流式 Agent 任务必然误杀，视为旧版默认值，加载时自动升级。
+ */
+export const LEGACY_MODEL_TIMEOUT_FLOOR_MS = 60_000;
+
 export const getMaximumOutputTokens = (
   model: string,
   configuredMaximum?: number,
@@ -41,12 +55,18 @@ export const modelConfigSchema = z
     baseUrl: z.string().url().optional(),
     baseUrlEnv: z.string().regex(ENV_NAME_PATTERN).optional(),
     temperature: z.number().min(0).max(1).default(0),
-    timeoutMs: z.number().int().positive().default(15_000),
+    timeoutMs: z.number().int().positive().default(DEFAULT_MODEL_TIMEOUT_MS),
     maxRetries: z.number().int().min(0).max(10).default(1),
     maxTokens: z.number().int().positive().optional(),
   })
   .transform((config) => ({
     ...config,
+    // 旧版 15s 默认值对长推理/整份文件的流式生成必然误超时；低于下限的配置
+    // 自动升级为新默认值，用户显式设置的较大超时保持不变。
+    timeoutMs:
+      config.timeoutMs < LEGACY_MODEL_TIMEOUT_FLOOR_MS
+        ? DEFAULT_MODEL_TIMEOUT_MS
+        : config.timeoutMs,
     // 已登记模型始终覆盖为真实上限，不允许旧配置或页面表单把它调低。
     maxTokens: getMaximumOutputTokens(config.model, config.maxTokens),
   }));
@@ -124,7 +144,7 @@ const createDefaultModelRegistry = (): ModelRegistry => {
         apiKeyEnv: 'ANTHROPIC_API_KEY',
         baseUrlEnv: 'ANTHROPIC_BASE_URL',
         temperature: 0,
-        timeoutMs: 15_000,
+        timeoutMs: DEFAULT_MODEL_TIMEOUT_MS,
         maxRetries: 1,
       },
     ],

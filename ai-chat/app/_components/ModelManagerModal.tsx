@@ -41,7 +41,8 @@ const DEFAULT_MODEL: ModelConfig = {
   model: '',
   apiKeyEnv: 'ANTHROPIC_API_KEY',
   temperature: 0,
-  timeoutMs: 15_000,
+  // 流式 Agent 任务（长推理/整份文件生成）单次请求可能持续数分钟，默认 5 分钟。
+  timeoutMs: 300_000,
   maxRetries: 1,
 };
 
@@ -412,8 +413,12 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
             <Form.Item label='Temperature' name='temperature'>
               <InputNumber min={0} max={1} step={0.1} />
             </Form.Item>
-            <Form.Item label='超时（毫秒）' name='timeoutMs'>
-              <InputNumber min={1} step={1000} />
+            <Form.Item
+              label='超时（毫秒）'
+              name='timeoutMs'
+              tooltip='单次模型请求的总超时。Agent 写整份文件/长推理会流式输出数分钟，建议不低于 60000；低于 60000 服务端会自动升级为 300000'
+            >
+              <InputNumber min={60_000} step={1000} />
             </Form.Item>
             <Form.Item label='最大重试次数' name='maxRetries'>
               <InputNumber min={0} max={10} step={1} />
