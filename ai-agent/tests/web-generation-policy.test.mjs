@@ -59,3 +59,25 @@ test('uses the OpenAI named-function tool choice format', async () => {
     function: { name: 'write_file' },
   });
 });
+
+test('keeps Kimi K3 tool choice automatic while exposing only write_file', async () => {
+  const middleware = createWebGenerationWriteFirstMiddleware(
+    'anthropic',
+    'kimi-k3',
+  );
+  let capturedRequest;
+
+  await middleware.wrapModelCall(
+    {
+      tools: [{ name: 'write_file' }, { name: 'execute' }],
+      toolChoice: 'write_file',
+    },
+    async (request) => {
+      capturedRequest = request;
+      return { content: '' };
+    },
+  );
+
+  assert.equal(capturedRequest.toolChoice, 'auto');
+  assert.deepEqual(capturedRequest.tools, [{ name: 'write_file' }]);
+});

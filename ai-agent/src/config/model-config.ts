@@ -36,7 +36,8 @@ export const getMaximumOutputTokens = (
   const normalizedModel = model.trim().toLowerCase().split('/').at(-1) ?? '';
 
   if (normalizedModel === 'qwen3.5-ocr') return 16_384;
-  if (normalizedModel === 'kimi-k3') return 1_048_576;
+  // Kimi K3 的 1M 指上下文窗口；TokenHub 单次最大输出为 128K。
+  if (normalizedModel === 'kimi-k3') return 131_072;
   if (normalizedModel.startsWith('deepseek-v4')) return 393_216;
   if (normalizedModel.startsWith('qwen3.8')) return 131_072;
 

@@ -60,9 +60,12 @@ export const isWebGenerationRequest = (content: string): boolean =>
 /**
  * 限定网页任务的首个模型回合只能选择 write_file。
  * Anthropic 与 OpenAI 的指定工具格式不同，LangChain 会把这里的值传给 bindTools。
+ * Kimi K3 固定开启思考，TokenHub 不允许它与指定工具组合，因此只收窄工具列表，
+ * 继续使用 auto 让模型在唯一可用的 write_file 中自行选择。
  */
 export const createWebGenerationWriteFirstMiddleware = (
   provider: ModelConfig['provider'],
+  model?: string,
 ) => {
   let initialWritePending = true;
 
@@ -78,9 +81,12 @@ export const createWebGenerationWriteFirstMiddleware = (
         throw new Error('网页生成任务缺少必需的 write_file 工具');
       }
 
+      const normalizedModel = model?.trim().toLowerCase().split('/').at(-1);
       const toolChoice =
         provider === 'anthropic'
-          ? 'write_file'
+          ? normalizedModel === 'kimi-k3'
+            ? 'auto'
+            : 'write_file'
           : { type: 'function', function: { name: 'write_file' } };
       const response = await handler({
         ...request,
@@ -397,7 +403,12 @@ export const createAgentRuntime = async (
             ? ['/skills/']
             : undefined,
         middleware: features.webGenerationRequested
-          ? [createWebGenerationWriteFirstMiddleware(config.provider)]
+          ? [
+              createWebGenerationWriteFirstMiddleware(
+                config.provider,
+                config.model,
+              ),
+            ]
           : undefined,
       });
 

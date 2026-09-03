@@ -22,7 +22,7 @@ test('uses the maximum output token limit for every configured model family', ()
   assert.equal(getMaximumOutputTokens('qwen3.8-max'), 131_072);
   assert.equal(getMaximumOutputTokens('qwen3.8-flash'), 131_072);
   assert.equal(getMaximumOutputTokens('qwen3.8-2.4t-a95b'), 131_072);
-  assert.equal(getMaximumOutputTokens('kimi-k3'), 1_048_576);
+  assert.equal(getMaximumOutputTokens('kimi-k3'), 131_072);
   assert.equal(getMaximumOutputTokens('qwen3.5-ocr'), 16_384);
   assert.equal(getMaximumOutputTokens('deepseek-v4-pro'), 393_216);
   assert.equal(getMaximumOutputTokens('deepseek-v4-flash'), 393_216);
