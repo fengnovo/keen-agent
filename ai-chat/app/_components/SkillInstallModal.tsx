@@ -115,7 +115,8 @@ export const SkillInstallModal: React.FC<SkillInstallModalProps> = ({
       const installResult = await installSkills(values.runner, args);
       setResult(installResult);
       onRegistryChange(installResult.registry);
-      if (installResult.installed.length > 0) {
+      const isUpgrade = installResult.message.includes('已更新');
+      if (installResult.installed.length > 0 || isUpgrade) {
         messageApi.success(installResult.message);
       } else {
         messageApi.warning(installResult.message);
@@ -185,8 +186,8 @@ export const SkillInstallModal: React.FC<SkillInstallModalProps> = ({
               />
             </Form.Item>
             <Typography.Text type='secondary'>
-              工作目录固定为 ai-agent。安装完成后，系统会扫描 .skills、.agents/skills
-              和常见 Agent Skills 目录，校验并自动注册新增 Skill。
+              工作目录固定为 ai-agent。安装完成后，系统会校验新增 Skill，
+              统一收口到 .skills 目录并自动注册（重复安装时原地更新）。
             </Typography.Text>
           </Form>
 
@@ -194,7 +195,12 @@ export const SkillInstallModal: React.FC<SkillInstallModalProps> = ({
             <>
               <Alert
                 showIcon
-                type={result.installed.length > 0 ? 'success' : 'warning'}
+                type={
+                  result.installed.length > 0 ||
+                  result.message.includes('已更新')
+                    ? 'success'
+                    : 'warning'
+                }
                 title={result.message}
                 description={
                   result.installed.length > 0

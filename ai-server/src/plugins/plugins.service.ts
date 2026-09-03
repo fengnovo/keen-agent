@@ -5,8 +5,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { spawn } from 'node:child_process';
-import { readdir, realpath, stat } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import {
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from 'node:fs/promises';
+import net from 'node:net';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import {
   PLUGIN_CONFIG_FILE,
   loadPluginRegistry,
@@ -38,6 +48,90 @@ const installSkillsSchema = z.object({
 });
 const SKILL_INSTALL_TIMEOUT_MS = 180_000;
 const MAX_INSTALL_OUTPUT_LENGTH = 60_000;
+
+/**
+ * 常见本地代理的混合/HTTP 端口（Clash Verge 7897、Clash 7890/7891、
+ * V2Ray/其他 1087/1080/8888）。安装器要从 GitHub 克隆仓库，宿主机直连
+ * 超时时自动复用本机已运行的代理。
+ */
+const LOCAL_PROXY_CANDIDATE_PORTS = [7897, 7890, 1087, 7891, 1080, 8888];
+
+const probeLocalProxyPort = (port: number): Promise<boolean> =>
+  new Promise((resolveProbe) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const done = (available: boolean) => {
+      socket.destroy();
+      resolveProbe(available);
+    };
+    socket.setTimeout(300);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+
+/**
+ * 返回需要注入安装器子进程的代理环境变量。
+ * - 服务进程已显式配置代理（HTTPS_PROXY 等）时返回空对象，原样透传；
+ * - 否则探测常见本地代理端口，命中则同时设置大小写形式，覆盖 git(libcurl)、
+ *   npm/npx 与 uvx 对代理变量名的差异；
+ * - 本机回环地址加入 NO_PROXY，避免本地请求绕代理。
+ */
+const resolveInstallerProxyEnv = async (): Promise<Record<string, string>> => {
+  const configured =
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy ||
+    process.env.ALL_PROXY ||
+    process.env.all_proxy;
+  if (configured?.trim()) return {};
+
+  for (const port of LOCAL_PROXY_CANDIDATE_PORTS) {
+    if (await probeLocalProxyPort(port)) {
+      const proxy = `http://127.0.0.1:${port}`;
+      return {
+        HTTP_PROXY: proxy,
+        HTTPS_PROXY: proxy,
+        http_proxy: proxy,
+        https_proxy: proxy,
+        ALL_PROXY: proxy,
+        all_proxy: proxy,
+        NO_PROXY: '127.0.0.1,localhost',
+        no_proxy: '127.0.0.1,localhost',
+      };
+    }
+  }
+
+  return {};
+};
+
+/**
+ * skills CLI 缺少确认参数时会进入交互式多选菜单；spawn 没有 TTY（stdin 接
+ * /dev/null）会让它读到 EOF 后静默退出、不落地任何文件。这里为 `skills add`
+ * 自动补齐非交互参数：
+ * - 追加 -y 跳过确认提示（含安全评估确认）；
+ * - 未显式指定目标时安装到项目级通用目录 .agents/skills（本服务的扫描目录）。
+ * 用户显式传入 --agent/--all/--global 时保持其选择不变。
+ */
+const normalizeSkillInstallArgs = (rawArgs: string[]): string[] => {
+  const skillsIndex = rawArgs.findIndex(
+    (arg) => arg === 'skills' || /^skills(@[\w.-]+)?$/.test(arg),
+  );
+  if (skillsIndex < 0) return rawArgs;
+  const subcommand = rawArgs[skillsIndex + 1];
+  if (subcommand !== 'add' && subcommand !== 'a') return rawArgs;
+
+  const flagName = (arg: string) => arg.split('=')[0];
+  const hasFlag = (...flags: string[]) =>
+    rawArgs.some((arg) => flags.includes(flagName(arg)));
+
+  const normalized = [...rawArgs];
+  if (!hasFlag('-y', '--yes')) normalized.push('-y');
+  if (!hasFlag('-a', '--agent', '--all', '-g', '--global')) {
+    normalized.push('-a', 'universal');
+  }
+  return normalized;
+};
 const SKILL_SEARCH_ROOTS = [
   SKILLS_ROOT,
   join(AI_AGENT_ROOT, '.agents', 'skills'),
@@ -226,7 +320,7 @@ export class PluginsService {
     const before = await this.discoverSkills();
     const output = await this.runSkillInstaller(
       parsed.data.runner,
-      parsed.data.args,
+      normalizeSkillInstallArgs(parsed.data.args),
     );
     const after = await this.discoverSkills();
     const candidates = [...after.values()].filter(
@@ -265,18 +359,40 @@ export class PluginsService {
       };
     }
 
+    // 安装器只会写入它认识的生态目录（.agents/skills 等）；这里统一移动到
+    // 项目约定的 .skills 根目录，注册表只暴露 .skills 下的路径。
+    const claimedTargets = new Set<string>();
+    const relocatedSkills = await Promise.all(
+      loadedSkills.map(async ({ candidate, skill }) => ({
+        candidate: await this.relocateInstalledSkill(
+          candidate,
+          skill.name,
+          before,
+          claimedTargets,
+        ),
+        skill,
+      })),
+    );
+
     const installed: SkillInstallResult['installed'] = [];
+    let upgradedCount = 0;
     const registry = await this.mutate((current) => {
       const plugins = [...current.plugins];
       const usedIds = new Set(plugins.map((plugin) => plugin.id));
 
-      for (const { candidate, skill } of loadedSkills) {
-        const alreadyRegistered = plugins.some(
+      for (const { candidate, skill } of relocatedSkills) {
+        const existing = plugins.find(
           (plugin) =>
             plugin.type === 'skill' &&
             plugin.path === candidate.configuredPath,
         );
-        if (alreadyRegistered) continue;
+        if (existing) {
+          // 同路径重新安装（升级）：刷新名称与描述，不重复注册。
+          existing.name = skill.name;
+          existing.description = skill.description;
+          upgradedCount += 1;
+          continue;
+        }
 
         const id = this.createUniqueSkillId(skill.name, usedIds);
         usedIds.add(id);
@@ -302,7 +418,10 @@ export class PluginsService {
     });
 
     return {
-      message: `安装命令执行成功，已注册 ${installed.length} 个 Skill`,
+      message:
+        installed.length > 0
+          ? `安装命令执行成功，已注册 ${installed.length} 个 Skill（统一保存到 .skills 目录）`
+          : `安装命令执行成功，已更新 ${upgradedCount} 个 Skill`,
       output,
       installed,
       registry,
@@ -335,6 +454,8 @@ export class PluginsService {
     runner: 'npx' | 'uvx',
     args: string[],
   ): Promise<string> {
+    // 安装器内部会用 git 从 GitHub 克隆仓库；宿主机直连不稳定时自动复用本机代理。
+    const installerProxyEnv = await resolveInstallerProxyEnv();
     const result = await new Promise<{
       exitCode: number | null;
       output: string;
@@ -345,6 +466,7 @@ export class PluginsService {
         cwd: AI_AGENT_ROOT,
         env: {
           ...process.env,
+          ...installerProxyEnv,
           CI: '1',
           NO_COLOR: '1',
           // 仓库 devEngines 固定为 pnpm；这里只对管理员主动启动的 npx
@@ -418,8 +540,15 @@ export class PluginsService {
       );
     }
     if (result.exitCode !== 0) {
+      const looksLikeNetworkFailure =
+        /Failed to connect to|Couldn't connect|curl 28|Could not resolve host|Failed to clone|Connection timed out|timed out/i.test(
+          output,
+        );
+      const networkHint = looksLikeNetworkFailure
+        ? '。克隆 GitHub 仓库失败，通常是宿主机无法直连 github.com：请开启 Clash 等本机代理后重试（服务端会自动探测并复用 7897/7890 等端口），或在启动 ai-server 时设置 HTTPS_PROXY 环境变量'
+        : '';
       throw new BadRequestException(
-        `${runner} 安装失败（退出码 ${result.exitCode ?? '未知'}）${output ? `：${output.slice(-1_500)}` : ''}`,
+        `${runner} 安装失败（退出码 ${result.exitCode ?? '未知'}）${networkHint}${output ? `：${output.slice(-1_500)}` : ''}`,
       );
     }
 
@@ -431,6 +560,109 @@ export class PluginsService {
       .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
       .replace(/\r/g, '')
       .trim();
+  }
+
+  /** 读取 Skill 目录下 SKILL.md frontmatter 中的 name（仅用于同名判断，失败返回 undefined）。 */
+  private async readSkillFrontmatterName(
+    directory: string,
+  ): Promise<string | undefined> {
+    try {
+      const content = await readFile(join(directory, 'SKILL.md'), 'utf8');
+      const frontmatter = content.split(/^---\s*$/m)[1];
+      const match = (frontmatter ?? content).match(
+        /^name:\s*['"]?([^'"\r\n]+)['"]?\s*$/m,
+      );
+      return match?.[1]?.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 把本次安装新增的 Skill 目录移动到项目约定的 .skills 根目录。
+   * - 已在 .skills 内则原样返回；
+   * - 目标已存在且是同一个 Skill（frontmatter name 相同）时删除旧目录后覆盖，
+   *   支持重新安装/升级；目标是其他 Skill 或系统内置内容时改用带后缀的目录名，
+   *   绝不误删；
+   * - 优先 rename（同盘原子移动），跨设备或失败时退化为 cp（解引用符号链接）后
+   *   删除源目录。
+   */
+  private async relocateInstalledSkill(
+    candidate: DiscoveredSkill,
+    skillName: string,
+    before: Map<string, DiscoveredSkill>,
+    claimedTargets: Set<string>,
+  ): Promise<DiscoveredSkill> {
+    await mkdir(SKILLS_ROOT, { recursive: true });
+    const skillsRootReal = await realpath(SKILLS_ROOT);
+
+    const relativeToSkills = relative(skillsRootReal, candidate.realPath);
+    if (
+      relativeToSkills &&
+      !isAbsolute(relativeToSkills) &&
+      !relativeToSkills.startsWith('..')
+    ) {
+      claimedTargets.add(candidate.realPath);
+      return candidate;
+    }
+
+    const pathExists = async (path: string): Promise<boolean> => {
+      try {
+        await stat(path);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const baseName = basename(candidate.realPath);
+    let suffix = 0;
+    let target = join(SKILLS_ROOT, baseName);
+    for (;;) {
+      const dirName = suffix === 0 ? baseName : `${baseName}-${suffix}`;
+      target = join(SKILLS_ROOT, dirName);
+      const targetReal = await realpath(target).catch(() => target);
+      const exists = await pathExists(target);
+      const claimedByBatch = claimedTargets.has(targetReal);
+
+      if (!exists || claimedByBatch) {
+        if (!claimedByBatch) break;
+        suffix += 1;
+        continue;
+      }
+
+      if (!before.has(targetReal)) {
+        // 安装前不存在：上次失败留下的残留，可安全覆盖。
+        break;
+      }
+
+      // 安装前已存在：同名 Skill 覆盖升级，疑似其他内容则避让。
+      const existingName = await this.readSkillFrontmatterName(target);
+      if (existingName === skillName) break;
+      suffix += 1;
+    }
+
+    const targetReal = await realpath(target).catch(() => target);
+    claimedTargets.add(targetReal);
+
+    if (await pathExists(target)) {
+      await rm(target, { recursive: true, force: true });
+    }
+    try {
+      await rename(candidate.realPath, target);
+    } catch {
+      await cp(candidate.realPath, target, { recursive: true });
+      await rm(candidate.realPath, { recursive: true, force: true });
+    }
+
+    const relocatedReal = await realpath(target);
+    return {
+      realPath: relocatedReal,
+      configuredPath: relative(REPOSITORY_ROOT, target).replaceAll(
+        '\\',
+        '/',
+      ),
+    };
   }
 
   private async discoverSkills(): Promise<Map<string, DiscoveredSkill>> {
