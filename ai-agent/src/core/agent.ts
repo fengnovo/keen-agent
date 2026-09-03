@@ -178,6 +178,10 @@ const formatInlineSkills = (skills: LoadedSkill[]): string =>
 /**
  * 创建不带工具和 Agent 循环的底层聊天模型。
  * Nest 的 OCR 预处理和 DeepAgent 主模型共用这里，确保环境变量解析与超时配置一致。
+ *
+ * 不再传递固定总 timeout——LangChain 收到 timeout 会立刻创建 AbortSignal.timeout
+ * 并与调用方 signal 合并，导致单次模型调用被硬时长掐断。改为完全依赖上层
+ * Agent 运行时的空闲超时统一管理：持续有 chunk 输出的活跃模型流永远不会被掐断。
  */
 export const createChatModel = (
   config: ModelConfig,
@@ -192,7 +196,6 @@ export const createChatModel = (
       apiKey: resolvedConfig.apiKey,
       maxRetries: resolvedConfig.maxRetries,
       maxTokens: resolvedConfig.maxTokens,
-      timeout: resolvedConfig.timeoutMs,
       configuration: {
         baseURL: resolvedConfig.baseURL,
       },
@@ -208,7 +211,6 @@ export const createChatModel = (
     maxTokens: resolvedConfig.maxTokens,
     clientOptions: {
       baseURL: resolvedConfig.baseURL,
-      timeout: resolvedConfig.timeoutMs,
     },
   });
 };

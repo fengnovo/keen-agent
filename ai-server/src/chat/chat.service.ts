@@ -39,11 +39,11 @@ const DEFAULT_VISION_MODEL_ID = 'qwen3.5-ocr';
 const IMAGE_DATA_URL_PATTERN =
   /^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
 /**
- * Agent 运行总超时（毫秒）。覆盖多轮工具调用 + 多轮模型请求的完整 Agent 运行，
- * 不同于模型单次请求的 timeoutMs。写整份源码文件或复杂多轮交互任务可能跑很久，
- * 这里设为 20 分钟，上限放宽到 60 分钟。
+ * Agent 空闲超时（毫秒）。stream 循环里每收到一个 event 就重置，
+ * 只有连续 N 分钟没有任何模型 chunk 或 tool event 才视为卡死。
+ * 活跃运行中的 Agent 永不被掐断。
  */
-const DEFAULT_AGENT_TIMEOUT_MS = 20 * 60_000;
+const DEFAULT_AGENT_TIMEOUT_MS = 3 * 60_000;
 
 const getAgentTimeoutMs = (): number => {
   const value = Number(
@@ -611,15 +611,65 @@ export class ChatService {
     }
   }
 
-  /** 执行聊天编排；资源生命周期由外层 stream 统一管理。 */
+  /**
+   * 执行聊天编排；资源生命周期由外层 stream 统一管理。
+   *
+   * 超时策略：
+   * - 客户端关闭 / 服务进程退出：clientSignal 立即 abort；
+   * - Agent 长时间没有任何输出（模型不吐 chunk、tool 不返回）才视为卡死，
+   *   用空闲超时兜底；活跃运行中的 Agent 不会被总时限掐断——写整页源码
+   *   或复杂多轮 Agent 可能持续数十分钟。
+   * - LangChain model 层不再设置固定总 timeout，避免和 Agent 层的超
+   *   时策略叠加。
+   */
   private async *runStream(
     prepared: PreparedChat,
     clientSignal: AbortSignal,
   ): AsyncGenerator<ChatStreamChunk> {
-    const signal = AbortSignal.any([
-      clientSignal,
-      AbortSignal.timeout(getAgentTimeoutMs()),
-    ]);
+    // 手动 AbortController：固定总时限改为每次 event 重置的空闲超时。
+    const agentAbort = new AbortController();
+    let idleTimer: NodeJS.Timeout | undefined;
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => agentAbort.abort(), getAgentTimeoutMs());
+    };
+    resetIdleTimer();
+    const signal = AbortSignal.any([clientSignal, agentAbort.signal]);
+
+    let idleAborted = false;
+    agentAbort.signal.addEventListener(
+      'abort',
+      () => {
+        if (!clientSignal.aborted) idleAborted = true;
+      },
+      { once: true },
+    );
+
+    try {
+      yield* this.runStreamBody(prepared, signal, resetIdleTimer, clientSignal);
+    } catch (error) {
+      if (idleAborted) {
+        yield {
+          content:
+            '\n\n> ⚠️ 长时间无响应：Agent 连续 ' +
+            `${Math.round(getAgentTimeoutMs() / 60_000)}` +
+            ' 分钟没有任何输出，可能是网络断开或工具调用卡死。' +
+            '请重新尝试这次对话，或改用更简单的任务分段完成。',
+        };
+        return;
+      }
+      throw error;
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
+    }
+  }
+
+  private async *runStreamBody(
+    prepared: PreparedChat,
+    signal: AbortSignal,
+    resetIdleTimer: () => void,
+    clientSignal: AbortSignal,
+  ): AsyncGenerator<ChatStreamChunk> {
     let reasoningContent = '';
     const reasoningStartedAt = Date.now();
     let reasoningFinished = false;
@@ -652,7 +702,7 @@ export class ChatService {
       const imageAnalysis = await analyzeImages(
         prepared.visionModel,
         currentUserMessage.images,
-        signal,
+        clientSignal,
       );
       prepared.conversation = await this.conversationsService.setImageAnalysis(
         prepared.conversation.id,
@@ -721,7 +771,7 @@ export class ChatService {
         const imageAnalysis = await analyzeImages(
           prepared.model,
           currentUserMessage.images,
-          signal,
+          clientSignal,
         );
         prepared.conversation =
           await this.conversationsService.setImageAnalysis(
@@ -735,7 +785,7 @@ export class ChatService {
         chunk = { content: imageAnalysis };
       } else {
         const response = await createChatModel(prepared.model).invoke(messages, {
-          signal,
+          signal: clientSignal,
         });
         chunk = extractContent(response.content);
 
@@ -803,6 +853,7 @@ export class ChatService {
     };
 
     for await (const event of stream) {
+      resetIdleTimer();
       if (!Array.isArray(event)) continue;
 
       if (event[0] === 'tools') {

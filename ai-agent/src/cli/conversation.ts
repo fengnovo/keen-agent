@@ -313,6 +313,18 @@ export const runConversation = async () => {
 
     loading.start('正在等待模型响应...');
 
+    // 空闲超时：每次收到 event 重置，真卡死才 abort
+    const idleController = new AbortController();
+    let idleTimer: NodeJS.Timeout | undefined;
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => idleController.abort(),
+        getAgentTimeoutMs(),
+      );
+    };
+    resetIdleTimer();
+
     try {
       // 每轮只提交新增的用户消息，历史由 checkpointer 根据 thread_id 自动恢复
       const messages = [
@@ -330,12 +342,13 @@ export const runConversation = async () => {
         {
           configurable: { thread_id: threadId },
           streamMode: ['messages', 'tools'],
-          // 限制整轮 Agent 执行时间，包含模型重试和工具调用
-          signal: AbortSignal.timeout(getAgentTimeoutMs()),
+          // 服务端同样的空闲超时策略：活跃运行的 Agent 永不被掐断
+          signal: idleController.signal,
         },
       );
 
       for await (const event of stream) {
+        resetIdleTimer();
         if (!Array.isArray(event) || event.length < 2) continue;
         const [mode, payload] = event;
         loading.stop();
@@ -403,6 +416,7 @@ export const runConversation = async () => {
       console.error(errorDetails);
     } finally {
       loading.stop();
+      if (idleTimer) clearTimeout(idleTimer);
     }
   }
 };
