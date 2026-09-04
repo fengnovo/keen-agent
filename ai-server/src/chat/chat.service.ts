@@ -173,6 +173,8 @@ const TOOL_INPUT_SUMMARY_KEYS = [
   'file_path',
   'pattern',
   'task',
+  'description',
+  'subagent_type',
 ] as const;
 
 const compactTraceText = (value: unknown): string | undefined => {
@@ -224,6 +226,16 @@ const summarizeToolInput = (
   }
 
   const record = normalizedInput as Record<string, unknown>;
+  if (toolName === 'task') {
+    const role = compactTraceText(record.subagent_type);
+    const description = compactTraceText(record.description);
+    const summary = [role, description].filter(Boolean).join(' · ');
+    return summary || undefined;
+  }
+  if (toolName === 'write_todos' && Array.isArray(record.todos)) {
+    return `规划 ${record.todos.length} 个工作项`;
+  }
+
   for (const key of TOOL_INPUT_SUMMARY_KEYS) {
     const summary = compactTraceText(record[key]);
     if (summary) return summary;

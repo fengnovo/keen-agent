@@ -9,6 +9,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import {
   createAgent as createLangChainAgent,
   createMiddleware,
+  todoListMiddleware,
   type ModelRequest,
 } from 'langchain';
 
@@ -29,6 +30,12 @@ import {
   type PublishedArtifact,
   type PublishedPreview,
 } from '../sandbox/index.ts';
+import {
+  createComplexPlanningMiddleware,
+  createOrchestrationSubagents,
+  createTaskConcurrencyMiddleware,
+  MULTI_AGENT_ORCHESTRATION_PROMPT,
+} from './orchestration.ts';
 
 /** 所有调用路径都会使用的基础提示词，与会话能力开关无关。 */
 const BASE_SYSTEM_PROMPT = [
@@ -51,6 +58,9 @@ const WEB_CREATION_ACTION_PATTERN =
   /(?:写|生成|创建|制作|搭建|开发|实现|设计|仿照|build|create|generate|make|develop|design)/i;
 const WEB_PAGE_TARGET_PATTERN =
   /(?:官网|网页|网站|页面|落地页|前端|html|react|vue|next\.?js|website|web\s?page|landing\s?page|frontend)/i;
+const DEFAULT_SUBAGENT_MAX_TOKENS = 8_192;
+const DEFAULT_SUBAGENT_CONCURRENCY = 2;
+const DEFAULT_SUBAGENT_MAX_RETRIES = 2;
 
 /** 只对明确要求产出网页源码的消息开启强制写文件流程。 */
 export const isWebGenerationRequest = (content: string): boolean =>
@@ -116,6 +126,12 @@ export interface AgentFeatures {
   sandbox?: AgentSandboxOptions;
   /** 明确的网页生成请求必须先写源码文件，不能把源码倾倒进思考文本。 */
   webGenerationRequested?: boolean;
+  /** 子 Agent 单次输出预算；与主 Agent 分离，防止并行任务失控拖慢整轮。 */
+  subagentMaxTokens?: number;
+  /** 同时真正执行的子 Agent 数；超出的 task 会在进程内排队。 */
+  subagentConcurrency?: number;
+  /** 子 Agent 临时模型调用错误的最大重试次数。 */
+  subagentMaxRetries?: number;
 }
 
 /** ChatService 与命令行只依赖 Agent 共有的流式和状态接口。 */
@@ -343,6 +359,7 @@ export const createAgentRuntime = async (
     sandboxRuntimePrompt,
     features.webGenerationRequested ? WEB_GENERATION_SYSTEM_PROMPT : '',
     pluginWarningPrompt,
+    plugins.deepAgentEnabled ? MULTI_AGENT_ORCHESTRATION_PROMPT : '',
     `当前运行模型名称：${config.name}`,
     `当前运行模型标识：${config.model}`,
     '当用户询问当前使用的模型时，必须依据以上当前配置回答，不要沿用历史消息中的模型身份。',
@@ -391,25 +408,84 @@ export const createAgentRuntime = async (
   try {
     if (plugins.deepAgentEnabled) {
       const skillFiles = sandbox ? undefined : toSkillFiles(plugins.skills);
+      const skillSources =
+        plugins.skills.length > 0 ? ['/skills/'] : undefined;
+      const environmentSubagentMaxTokens = Number(
+        process.env.AI_SUBAGENT_MAX_TOKENS,
+      );
+      const configuredSubagentMaxTokens =
+        features.subagentMaxTokens ?? environmentSubagentMaxTokens;
+      const requestedSubagentMaxTokens =
+        Number.isInteger(configuredSubagentMaxTokens) &&
+        configuredSubagentMaxTokens >= 1_024
+          ? configuredSubagentMaxTokens
+          : DEFAULT_SUBAGENT_MAX_TOKENS;
+      const environmentSubagentConcurrency = Number(
+        process.env.AI_SUBAGENT_CONCURRENCY,
+      );
+      const configuredSubagentConcurrency =
+        features.subagentConcurrency ?? environmentSubagentConcurrency;
+      const subagentConcurrency =
+        Number.isInteger(configuredSubagentConcurrency) &&
+        configuredSubagentConcurrency >= 1
+          ? Math.min(configuredSubagentConcurrency, 16)
+          : DEFAULT_SUBAGENT_CONCURRENCY;
+      const environmentSubagentMaxRetries = Number(
+        process.env.AI_SUBAGENT_MAX_RETRIES,
+      );
+      const configuredSubagentMaxRetries =
+        features.subagentMaxRetries ?? environmentSubagentMaxRetries;
+      const subagentMaxRetries =
+        Number.isInteger(configuredSubagentMaxRetries) &&
+        configuredSubagentMaxRetries >= 0
+          ? Math.min(configuredSubagentMaxRetries, 8)
+          : DEFAULT_SUBAGENT_MAX_RETRIES;
+      const subagentModel = createChatModel({
+        ...config,
+        // 子 Agent 统一交给 middleware 做可观测的选择性重试，
+        // 避免 SDK 内层重试与外层指数退避相乘。
+        maxRetries: 0,
+        maxTokens: Math.min(config.maxTokens, requestedSubagentMaxTokens),
+      });
       const agent = createDeepAgent({
         model,
         tools: allTools,
         systemPrompt,
+        // task 不再只有一个无差别的 general-purpose 目标；主模型必须根据
+        // 工作性质在规划、调研、实现和复核角色之间做出明确路由决策。
+        subagents: createOrchestrationSubagents(
+          allTools,
+          skillSources,
+          subagentModel,
+          subagentMaxRetries,
+        ),
         checkpointer: new MemorySaver(),
         // 没有沙箱时使用 StateBackend；有沙箱时 Skill 已物化为只读挂载。
         backend: sandbox,
-        skills:
-          plugins.skills.length > 0
-            ? ['/skills/']
-            : undefined,
-        middleware: features.webGenerationRequested
-          ? [
-              createWebGenerationWriteFirstMiddleware(
-                config.provider,
-                config.model,
-              ),
-            ]
-          : undefined,
+        skills: skillSources,
+        // deepagents 1.13 不会再为任意模型默认启用 write_todos；显式注册后，
+        // Kimi、Qwen、DeepSeek 等兼容端点也拥有同一套规划能力。
+        middleware: [
+          todoListMiddleware(),
+          createTaskConcurrencyMiddleware(subagentConcurrency),
+          ...(!features.webGenerationRequested
+            ? [
+                createComplexPlanningMiddleware(
+                  config.provider,
+                  config.model,
+                  subagentConcurrency,
+                ),
+              ]
+            : []),
+          ...(features.webGenerationRequested
+            ? [
+                createWebGenerationWriteFirstMiddleware(
+                  config.provider,
+                  config.model,
+                ),
+              ]
+            : []),
+        ],
       });
 
       return {

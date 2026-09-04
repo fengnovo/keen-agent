@@ -111,12 +111,54 @@ ai-agent/
 - 当前已启用的本地工具、MCP 工具和 Skills；
 - `MemorySaver` 内存检查点。
 
-`features` 支持两个可选开关，省略时都默认为 `true`，因此命令行入口保持原有行为：
+`features` 的两个能力开关省略时都默认为 `true`，因此命令行入口保持原有行为：
 
 - `thinkingEnabled`：选择“充分分析”或“优先直接回答”的系统提示策略。
 - `toolsEnabled`：当前会话的插件总开关。关闭时不会读取 Skill、连接 MCP 或暴露任何工具。
+- `subagentMaxTokens`：可选的子 Agent 单次输出预算；不影响主 Agent。
+- `subagentConcurrency`：子 Agent 的实际执行并发上限；超出的 `task` 在进程内排队。
+- `subagentMaxRetries`：子 Agent 遇到断流、限流或临时 5xx 时的重试次数。
 
 当 `toolsEnabled` 和 `deepagent-core` 都开启时创建 DeepAgent，提供规划、临时文件工作区和任务委派等内置能力。关闭其中任意一项时改用普通 LangChain Agent，因此不是只靠提示词隐藏 DeepAgent 内置工具。
+
+### 多 Agent 编排
+
+`deepagents` 的 `task` 工具只提供委派机制，并不保证模型会主动拆解或并行执行。本项目在运行时额外完成三项配置：
+
+- 显式注册 `todoListMiddleware()`，确保 Kimi、Qwen、DeepSeek 等没有内置 harness profile 的模型同样拥有 `write_todos`；
+- 注册 `planner`、`researcher`、`implementer`、`reviewer` 四种专职子 Agent 和一个 `general-purpose` 后备角色，让主 Agent 根据工作性质路由，而不是把所有任务都交给默认通用 Agent；
+- 注入协调协议：复杂任务先规划，独立工作包在同一模型回合并行调用多个 `task`，并行实现必须拥有互不重叠的文件范围，最后由主 Agent 汇总并交给 reviewer 独立复核。
+
+协调协议仍属于模型指令，因此运行时还包含一个保守的确定性两阶段 gate：当用户请求明显包含多个工作流时，主 Agent 的第一个模型回合只暴露 `write_todos`，第二个模型回合只暴露 `task` 并要求并行派发独立工作包；子 Agent 返回后才恢复其他工具。简单请求不会经过该门，也不会为了形式强制创建子 Agent。网页生成任务已有“首个工具必须是 `write_file`”的更高优先级约束，因此不启用两阶段 gate，主 Agent 会在后续回合按协调协议补计划。
+
+子 Agent 使用隔离的消息上下文，但共享同一个受限文件 Backend。主 Agent 是唯一的协调者和最终责任人；子 Agent 不会彼此直接通信，它们通过返回报告和共享工作区与主 Agent 协作。
+
+子 Agent 默认使用与主 Agent 相同的模型和连接，但单次输出限制为 8,192 tokens，避免多个并行上下文各自消耗主模型的超长输出预算。主 Agent 的输出上限不受影响。可用 `AI_SUBAGENT_MAX_TOKENS` 调整，也可通过 `createAgentRuntime(..., { subagentMaxTokens })` 按运行时覆盖。
+
+子 Agent 默认最多同时执行 2 个。主 Agent 仍可一次生成多个 `task` 调用，超额调用会排队，从而降低 Anthropic/OpenAI 兼容端点在多路流式请求下出现 `terminated`、`429` 或临时 `5xx` 的概率。临时错误默认指数退避重试 2 次；鉴权、参数校验等确定性错误会直接失败。可分别用 `AI_SUBAGENT_CONCURRENCY` 和 `AI_SUBAGENT_MAX_RETRIES` 覆盖，或传入同名运行时选项。
+
+#### 自动验收
+
+先在 `ai-agent/.env` 中配置待测模型需要的密钥，然后运行：
+
+```bash
+pnpm --filter @keen-agent/ai-agent verify:multi-agent
+```
+
+默认验证当前活动模型；也可以指定模型：
+
+```bash
+MULTI_AGENT_VERIFY_MODEL_ID=deepseek-v4-pro pnpm --filter @keen-agent/ai-agent verify:multi-agent
+```
+
+验收提示本身不会要求“使用多个 Agent”。脚本记录真实的 LangChain tools 流，只有同时满足以下条件才以退出码 0 通过：
+
+1. `write_todos` 发生在首次 `task` 之前；
+2. 至少发起两个 `task`；
+3. 至少两个 `task` 的运行区间真实重叠，而不是串行调用；
+4. 所有委派均正常结束。
+
+这项验收测试的是模型在当前 Provider 上的自主编排行为。单元测试另外覆盖角色注册、协调协议和轨迹判定器，但单元测试通过不代表某个具体模型一定会遵循协议。
 
 命令行聊天和 Web 的主模型回答都使用这个工厂。Web 会从当前会话读取上述开关，每次请求
 创建临时线程并注入服务端完整历史；命令行则在进程内持续复用同一线程。
@@ -244,6 +286,12 @@ VISION_MODEL_ID=qwen3.5-ocr
 DOCKER_SANDBOX_IMAGE=keen-agent-sandbox:latest
 DOCKER_SANDBOX_COMMAND_TIMEOUT_MS=180000
 AI_AGENT_TIMEOUT_MS=300000
+# 可选：子 Agent 单次输出预算，默认 8192
+AI_SUBAGENT_MAX_TOKENS=8192
+# 可选：子 Agent 实际执行并发上限，默认 2
+AI_SUBAGENT_CONCURRENCY=2
+# 可选：断流、限流和临时 5xx 的重试次数，默认 2
+AI_SUBAGENT_MAX_RETRIES=2
 ```
 
 未配置时默认使用 `qwen3.5-ocr`。

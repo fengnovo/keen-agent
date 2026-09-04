@@ -154,11 +154,12 @@ export const createDefaultPluginRegistry = (): PluginRegistry =>
         id: 'deepagent-core',
         name: 'DeepAgent 内置工具',
         description:
-          '规划、临时文件工作区、内容检索和任务委派等 DeepAgent 核心能力。',
+          '结构化规划、临时文件工作区、内容检索和具名子 Agent 协作等核心能力。',
         type: 'builtin',
         system: true,
         implementation: 'deepagent',
         capabilities: [
+          'write_todos',
           'ls',
           'read_file',
           'write_file',
@@ -239,6 +240,17 @@ const migratePluginRegistry = (
         (plugin) => plugin.id === 'docker-sandbox',
       )!,
     );
+    changed = true;
+  }
+
+  const deepAgentCore = plugins.find(
+    (plugin) => plugin.id === 'deepagent-core' && plugin.type === 'builtin',
+  );
+  if (
+    deepAgentCore?.type === 'builtin' &&
+    !deepAgentCore.capabilities.includes('write_todos')
+  ) {
+    deepAgentCore.capabilities.unshift('write_todos');
     changed = true;
   }
 

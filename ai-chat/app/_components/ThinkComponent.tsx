@@ -28,6 +28,8 @@ interface ThinkComponentProps {
 
 const getToolLabel = (name: string): string => {
   const normalized = name.split('__').at(-1)?.toLowerCase() ?? name;
+  if (normalized === 'write_todos') return '规划任务';
+  if (normalized === 'task') return '委派子 Agent';
   if (normalized.includes('search')) return '搜索网页';
   if (/crawl|fetch|browse|open/.test(normalized)) return '浏览页面';
   if (/read|grep|glob|list|ls/.test(normalized)) return '读取资料';
