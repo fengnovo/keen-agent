@@ -104,3 +104,13 @@ test('keeps reasoning in loading state until the whole response settles', () => 
   assert.equal(isReasoningStreamDone('error'), true);
   assert.equal(isReasoningStreamDone('abort'), true);
 });
+
+test('settled streams never leave incomplete tools spinning', async () => {
+  const { settleReasoningSteps } = await import('../app/_utils/reasoning-trace.ts');
+  const steps = [{ kind: 'tool', key: '1', callId: '1', name: 'task', status: 'running' },
+    { kind: 'tool', key: '2', callId: '2', name: 'tavily_search', status: 'success' }];
+  assert.equal(settleReasoningSteps(steps, false)[0].status, 'running');
+  assert.equal(settleReasoningSteps(steps, true)[0].status, 'stopped');
+  assert.equal(settleReasoningSteps(steps, true)[1].status, 'success');
+  assert.equal(steps[0].status, 'running');
+});

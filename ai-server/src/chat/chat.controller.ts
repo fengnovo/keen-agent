@@ -39,17 +39,29 @@ export class ChatController {
     @Body() body: unknown,
     @Res() response: Response,
   ): Promise<void> {
-    const prepared = await this.chatService.prepare(body);
     // 浏览器关闭连接时，把取消信号继续传给 LangChain/模型 SDK。
     const abortController = new AbortController();
     const abortOnClose = () => abortController.abort();
+    response.once('close', abortOnClose);
+    let prepared;
+    try {
+      prepared = await this.chatService.prepare(body);
+    } catch (error) {
+      response.off('close', abortOnClose);
+      if (abortController.signal.aborted) return;
+      throw error;
+    }
+    if (abortController.signal.aborted || response.destroyed) {
+      response.off('close', abortOnClose);
+      await prepared.agentRuntime?.close().catch(() => undefined);
+      return;
+    }
 
     response.status(200);
     response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     response.setHeader('Cache-Control', 'no-cache, no-transform');
     response.setHeader('Connection', 'keep-alive');
     response.flushHeaders();
-    response.once('close', abortOnClose);
 
     // Agent 等待 MCP 工具或模型首块时可能长时间没有数据；按固定间隔发送 SSE
     // 注释行（冒号开头，EventSource 与前端解析器都会忽略），让 Next dev 代理等
@@ -66,6 +78,7 @@ export class ChatController {
         prepared,
         abortController.signal,
       )) {
+        if (abortController.signal.aborted) break;
         response.write(
           `data: ${JSON.stringify(createSsePayload(prepared.model.model, chunk))}\n\n`,
         );

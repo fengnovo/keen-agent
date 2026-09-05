@@ -1,119 +1,69 @@
 import { tool } from '@langchain/core/tools';
-import {
-  TavilyResearch,
-  TavilyGetResearch,
-  TavilyCrawl,
-  TavilyExtract,
-  TavilySearch,
-} from '@langchain/tavily';
 import { z } from 'zod';
+import { pollResearch, readCallLimit, tavilyRequest } from './tavily-client.ts';
 
-/**
- * 系统工具注册表。
- * 外部配置只能引用这里登记的实现标识，不能通过管理页面注入 TypeScript。
- */
-export const systemToolCatalog = {
-  tiandi_tongshou: tool(({ a, b }) => Number(a) + Number(b) + 100, {
-    // 部分 Anthropic 兼容接口只接受 ASCII 工具名。
-    name: 'tiandi_tongshou',
-    description: '天地同寿算法：给定两个数，返回两数之和再加 100',
-    schema: z.object({
-      a: z.number().describe('第一个数'),
-      b: z.number().describe('第二个数'),
+/** One catalog per conversation run: all workers/replans share limits and results. */
+export function createSystemToolCatalog() {
+  const used = new Map<string, number>();
+  const cache = new Map<string, Promise<Record<string, unknown>>>();
+  const limits = {
+    tavily_search: readCallLimit('TAVILY_SEARCH_MAX_CALLS', 20),
+    tavily_research: readCallLimit('TAVILY_RESEARCH_MAX_CALLS', 0),
+    tavily_crawl: readCallLimit('TAVILY_CRAWL_MAX_CALLS', 2),
+    tavily_extract: readCallLimit('TAVILY_EXTRACT_MAX_CALLS', 10),
+  };
+  async function run(name: keyof typeof limits, input: string, signal: AbortSignal | undefined,
+    execute: () => Promise<Record<string, unknown>>) {
+    signal?.throwIfAborted();
+    const key = `${name}:${input.trim().replace(/\s+/g, ' ')}`;
+    const existing = cache.get(key);
+    if (existing) return existing;
+    const count = used.get(name) ?? 0;
+    if (count >= limits[name]) return { error: `${name} 已达到本轮共享调用上限（${limits[name]}）。请根据已有证据完成回答并说明资料缺口，不要重复尝试或换工具绕过限制。` };
+    used.set(name, count + 1);
+    const pending = execute();
+    cache.set(key, pending);
+    try { return await pending; }
+    catch (error) {
+      // A Research POST may already have created a billable remote task.
+      if (name !== 'tavily_research') cache.delete(key);
+      throw error;
+    }
+  }
+  return {
+    tiandi_tongshou: tool(({ a, b }) => Number(a) + Number(b) + 100, {
+      name: 'tiandi_tongshou', description: '天地同寿算法：给定两个数，返回两数之和再加 100',
+      schema: z.object({ a: z.number().describe('第一个数'), b: z.number().describe('第二个数') }),
     }),
-  }),
-  tavily_search: tool(
-    async ({ query }) => {
-      const search = new TavilySearch({
-        maxResults: 5, // 返回结果数量[reference:19]
-        searchDepth: 'basic', // 或 "advanced"[reference:20]
-        topic: 'general', // 搜索主题: "general" | "news" | "finance"[reference:21]
-        includeAnswer: false, // 是否包含AI生成的摘要答案[reference:22]
-      });
-      // TavilySearch 本身就是 StructuredTool，通过 invoke 调用
-      return await search.invoke({ query });
-    },
-    {
-      name: 'tavily_search',
-      description: 'Tavily 搜索工具：用于进行网络搜索',
-      schema: z.object({
-        query: z.string().describe('搜索查询'),
-      }),
-    },
-  ),
-  tavily_research: tool(
-    async ({ query }) => {
-      // 非流式模式：先创建研究任务拿到 request_id，再轮询直到研究完成
-      const research = new TavilyResearch({
-        stream: false,
-      });
-      const queued = await research.invoke({ input: query, stream: false });
-      if (!('request_id' in queued)) {
-        return queued;
-      }
-      const getResearch = new TavilyGetResearch();
-      const maxAttempts = 50; // 每 5 秒轮询一次，最长约 4 分钟
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        const result = await getResearch.invoke({
-          requestId: queued.request_id,
-        });
-        if ('error' in result) {
-          return result;
-        }
-        if (result.status === 'completed' || result.status === 'failed') {
-          return result;
-        }
-      }
-      return {
-        request_id: queued.request_id,
-        status: 'timeout',
-        message: '研究任务超时，请稍后使用 request_id 重新查询研究结果',
-      };
-    },
-    {
+    tavily_search: tool(async ({ query }, config) => run('tavily_search', query, config.signal,
+      () => tavilyRequest('/search', { query, max_results: 5, search_depth: 'basic', topic: 'general', include_answer: false }, config.signal)), {
+      name: 'tavily_search', metadata: { readOnlyHint: true },
+      description: `普通网页搜索，适合查证具体事实。全体 Agent 每轮共享最多 ${limits.tavily_search} 次查询；相同查询复用结果。优先使用此工具。`,
+      schema: z.object({ query: z.string().describe('搜索查询') }),
+    }),
+    tavily_research: tool(async ({ query }, config) => run('tavily_research', query, config.signal, async () => {
+      const queued = await tavilyRequest('/research', { input: query, stream: false, model: 'mini' }, config.signal);
+      if (typeof queued.request_id !== 'string') return queued;
+      return pollResearch(queued.request_id, config.signal);
+    }), {
       name: 'tavily_research',
-      description: 'Tavily 研究工具：用于进行网络研究，流式输出结果',
-      schema: z.object({
-        query: z.string().describe('研究查询'),
-      }),
-    },
-  ),
-  tavily_crawl: tool(
-    async ({ url }) => {
-      const crawl = new TavilyCrawl({
-        maxDepth: 2, // 最大爬取深度[reference:24]
-        maxBreadth: 20, // 每层最大页面数[reference:25]
-        limit: 50, // 总页面数上限[reference:26]
-      });
-      // TavilyCrawl 本身就是 StructuredTool，通过 invoke 调用
-      return await crawl.invoke({ url });
-    },
-    {
-      name: 'tavily_crawl',
-      description: 'Tavily 爬虫工具：用于抓取网页内容',
-      schema: z.object({
-        url: z.string().url().describe('要抓取的网页 URL'),
-      }),
-    },
-  ),
-  tavily_extract: tool(
-    async ({ url }) => {
-      const extract = new TavilyExtract({
-        extractDepth: 'basic', // 或 "advanced"[reference:23]
-      });
-      // TavilyExtract 入参为 urls 数组
-      return await extract.invoke({ urls: [url] });
-    },
-    {
-      name: 'tavily_extract',
-      description: 'Tavily 提取工具：用于从网页中提取文本内容',
-      schema: z.object({
-        url: z.string().url().describe('要提取内容的网页 URL'),
-      }),
-    },
-  ),
-} as const;
+      description: `启动 Tavily 托管的付费深度研究，可能耗时数分钟且消耗大量额度；不是普通搜索。每轮共享最多 ${limits.tavily_research} 次。停止本地等待不能撤销已经提交的远程研究任务。`,
+      schema: z.object({ query: z.string().describe('研究问题') }),
+    }),
+    tavily_crawl: tool(async ({ url }, config) => run('tavily_crawl', url, config.signal,
+      () => tavilyRequest('/crawl', { url, max_depth: 1, max_breadth: 5, limit: 5 }, config.signal)), {
+      name: 'tavily_crawl', metadata: { readOnlyHint: true },
+      description: '抓取网站页面，每次最多 5 页；单个页面优先使用 tavily_extract。',
+      schema: z.object({ url: z.string().url() }),
+    }),
+    tavily_extract: tool(async ({ url }, config) => run('tavily_extract', url, config.signal,
+      () => tavilyRequest('/extract', { urls: [url], extract_depth: 'basic' }, config.signal)), {
+      name: 'tavily_extract', metadata: { readOnlyHint: true }, description: '提取单个网页的文本内容。',
+      schema: z.object({ url: z.string().url() }),
+    }),
+  } as const;
+}
 
-export type SystemTool =
-  (typeof systemToolCatalog)[keyof typeof systemToolCatalog];
+/** Names/schema for registry validation; execution uses a fresh catalog. */
+export const systemToolCatalog = createSystemToolCatalog();
+export type SystemTool = (typeof systemToolCatalog)[keyof typeof systemToolCatalog];

@@ -83,6 +83,7 @@ export const AssistantMessageContent: React.FC<
           content={parts.reasoning}
           className={className}
           isDone={parts.reasoningDone}
+          status={status}
         />
       ) : null}
 

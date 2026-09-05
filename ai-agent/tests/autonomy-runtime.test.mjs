@@ -76,3 +76,48 @@ test('direct route streams answer and no task events', async () => {
   assert.equal(chunks.filter(c => c[0] === 'messages').map(c => c[1][0].content).join(''), '391');
   assert.equal(chunks.some(c => c[0] === 'tools' && c[1].name === 'task'), false);
 });
+
+test('planning emits progress before a slow model responds, and abort prevents workers', async () => {
+  const controller = new AbortController();
+  let workerCalls = 0;
+  const model = new ScriptedModel(async (_messages, options) => {
+    await new Promise((resolve, reject) => {
+      if (options.signal?.aborted) return reject(options.signal.reason);
+      options.signal?.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+    throw new Error('unreachable');
+  });
+  const runtime = createAutonomousRuntime({ model, workerModel: () => { workerCalls++; return model; },
+    tools: [], systemPrompt: 'test', shellEnabled: false, maxConcurrency: 2, maxRetries: 0 });
+  const stream = await runtime.stream({ messages: [{ role: 'user', content: 'complex research' }] },
+    { configurable: { thread_id: randomUUID() }, signal: controller.signal });
+  const iterator = stream[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  assert.equal(first.value[1].name, 'plan_tasks');
+  assert.equal(first.value[1].event, 'on_tool_start');
+  controller.abort();
+  await assert.rejects(async () => { for await (const _ of iterator) {} });
+  assert.equal(workerCalls, 0);
+});
+
+test('public Tavily tool produces one named lifecycle without nested unknown polls', async t => {
+  const { createSystemToolCatalog } = await import('../src/plugins/builtin-tools.ts');
+  const oldKey = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = 'test-only';
+  t.after(() => { oldKey === undefined ? delete process.env.TAVILY_API_KEY : process.env.TAVILY_API_KEY = oldKey; });
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [{ url: 'https://example.com' }] }));
+  let rounds = 0;
+  const model = new ScriptedModel((_messages, options) => options.testTools?.includes('plan_tasks')
+    ? call('plan_tasks', { mode: 'direct', rationale: '单次查询', tasks: [] })
+    : rounds++ === 0 ? call('tavily_search', { query: 'population' }) : new AIMessage('answer'));
+  const runtime = createAutonomousRuntime({ model, workerModel: () => model,
+    tools: [createSystemToolCatalog().tavily_search], systemPrompt: 'test', shellEnabled: false, maxConcurrency: 2, maxRetries: 0 });
+  const stream = await runtime.stream({ messages: [{ role: 'user', content: 'search' }] },
+    { configurable: { thread_id: randomUUID() } });
+  const events = [];
+  for await (const item of stream) if (item[0] === 'tools') events.push(item[1]);
+  assert.equal(events.some(e => e.name === 'unknown'), false, JSON.stringify(events));
+  const search = events.filter(e => e.name === 'tavily_search');
+  assert.equal(search.length, 2, JSON.stringify(events));
+  assert.equal(search[0].toolCallId, search[1].toolCallId);
+});

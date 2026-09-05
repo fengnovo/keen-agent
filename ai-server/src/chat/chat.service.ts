@@ -226,6 +226,9 @@ const summarizeToolInput = (
   }
 
   const record = normalizedInput as Record<string, unknown>;
+  if (toolName === 'plan_tasks' && typeof record.stage === 'string') {
+    return compactTraceText(record.stage);
+  }
   if (toolName === 'task') {
     const role = compactTraceText(record.role ?? record.subagent_type);
     const description = compactTraceText(record.objective ?? record.description);
@@ -732,6 +735,7 @@ export class ChatService {
     livenessCallback: ReturnType<typeof createLivenessCallback>,
   ): AsyncGenerator<ChatStreamChunk> {
     let reasoningContent = '';
+    signal.throwIfAborted();
     const reasoningStartedAt = Date.now();
     let reasoningFinished = false;
     const finishReasoning = (): string | undefined => {
@@ -915,6 +919,7 @@ export class ChatService {
     };
 
     for await (const event of stream) {
+      signal.throwIfAborted();
       resetIdleTimer();
       if (!Array.isArray(event)) continue;
 
@@ -936,6 +941,8 @@ export class ChatService {
         }
 
         const name = toolEvent.name.trim();
+        // SDK-internal callbacks without a tool identity are not user actions.
+        if (name === 'unknown') continue;
         const providedCallId =
           typeof toolEvent.toolCallId === 'string' && toolEvent.toolCallId
             ? toolEvent.toolCallId

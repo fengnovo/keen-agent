@@ -9,7 +9,7 @@ export interface ReasoningToolStep {
   key: string;
   callId: string;
   name: string;
-  status: 'running' | 'success' | 'error';
+  status: 'running' | 'success' | 'error' | 'stopped';
   inputSummary?: string;
   outputSummary?: string;
 }
@@ -36,6 +36,11 @@ export interface ReconciledReasoningTrace {
 /** 思考面板必须等整条助手消息停止流式更新后，才能进入最终完成态。 */
 export const isReasoningStreamDone = (status?: string): boolean =>
   status !== 'loading' && status !== 'updating';
+
+/** A disconnected/aborted stream cannot leave tools visually running forever. */
+export const settleReasoningSteps = (steps: ReasoningTraceStep[], isDone: boolean): ReasoningTraceStep[] =>
+  steps.map(step => isDone && step.kind === 'tool' && step.status === 'running'
+    ? { ...step, status: 'stopped' } : step);
 
 const TRACE_MARKER_PATTERN =
   /\[keen-tool-event:([^\]\r\n]+)\]|\[keen-reasoning-duration:(\d+)\]/g;

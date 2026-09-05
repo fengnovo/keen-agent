@@ -241,7 +241,7 @@ const Independent: React.FC = () => {
     conversationKey: activeConversationKey,
     defaultMessages: historyMessageFactory,
     requestPlaceholder: () => ({
-      content: texts.noData,
+      content: '<think>正在准备并分析问题…',
       role: 'assistant',
     }),
     requestFallback: (_, { error, errorInfo, messageInfo }) => {

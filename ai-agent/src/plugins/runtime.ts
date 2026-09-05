@@ -4,7 +4,7 @@ import type {
   PluginRegistry,
   SkillPluginConfig,
 } from '../config/plugin-config.ts';
-import { systemToolCatalog, type SystemTool } from './builtin-tools.ts';
+import { createSystemToolCatalog, type SystemTool } from './builtin-tools.ts';
 import { loadMcpTools, testMcpPlugin, type McpTools } from './mcp-loader.ts';
 import { loadSkill, type LoadedSkill } from './skill-loader.ts';
 import { DockerSandboxBackend } from '../sandbox/docker-sandbox.ts';
@@ -62,8 +62,10 @@ export const resolvePlugins = async (
   const sandboxEnabled = toolPlugins.some(
     (plugin) => plugin.implementation === 'docker_sandbox',
   );
+  const systemToolCatalog = createSystemToolCatalog();
   const tools = toolPlugins.flatMap((plugin) =>
-    Object.keys(systemToolCatalog).includes(plugin.implementation)
+    Object.keys(systemToolCatalog).includes(plugin.implementation) &&
+    (plugin.implementation !== 'tavily_research' || Number(process.env.TAVILY_RESEARCH_MAX_CALLS ?? 0) > 0)
       ? [systemToolCatalog[plugin.implementation as keyof typeof systemToolCatalog]]
       : [],
   );

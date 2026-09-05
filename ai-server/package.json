@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nest start --watch",
     "build": "nest build",
+    "test": "pnpm build && node --test tests/*.test.mjs",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit"
   },

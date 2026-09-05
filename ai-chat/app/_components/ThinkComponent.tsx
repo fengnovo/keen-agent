@@ -16,6 +16,7 @@ import type { ThoughtChainItemType } from '@ant-design/x';
 import {
   formatReasoningDuration,
   parseReasoningTrace,
+  settleReasoningSteps,
   type ReasoningToolStep,
 } from '../_utils/reasoning-trace';
 import { MarkdownContent } from './MarkdownContent';
@@ -24,11 +25,15 @@ interface ThinkComponentProps {
   content: string;
   className: string;
   isDone: boolean;
+  status?: string;
 }
 
 const getToolLabel = (name: string): string => {
   const normalized = name.split('__').at(-1)?.toLowerCase() ?? name;
   if (normalized === 'write_todos') return '规划任务';
+  if (normalized === 'plan_tasks') return '规划任务';
+  if (normalized === 'submit_task_result') return '提交研究结果';
+  if (normalized === 'tavily_research') return '深度研究';
   if (normalized === 'task') return '委派子 Agent';
   if (normalized.includes('search')) return '搜索网页';
   if (/crawl|fetch|browse|open/.test(normalized)) return '浏览页面';
@@ -41,6 +46,7 @@ const getToolLabel = (name: string): string => {
 const getToolIcon = (step: ReasoningToolStep): React.ReactNode => {
   if (step.status === 'running') return <LoadingOutlined spin />;
   if (step.status === 'error') return <CloseCircleOutlined />;
+  if (step.status === 'stopped') return <CloseCircleOutlined />;
 
   const normalized = step.name.toLowerCase();
   if (normalized.includes('search')) return <SearchOutlined />;
@@ -54,6 +60,7 @@ const getToolIcon = (step: ReasoningToolStep): React.ReactNode => {
 const getToolTitle = (step: ReasoningToolStep): string => {
   const label = getToolLabel(step.name);
   if (step.status === 'running') return `${label}中…`;
+  if (step.status === 'stopped') return `${label} · 已停止，未收到完成结果`;
   if (step.status === 'error') return `${label}失败`;
   return step.outputSummary ? `${label} · ${step.outputSummary}` : `${label}完成`;
 };
@@ -63,13 +70,13 @@ const getToolTitle = (step: ReasoningToolStep): string => {
  * 不再把工具调用、耗时和正式回答堆在同一个灰色文本块中。
  */
 export const ThinkComponent: React.FC<ThinkComponentProps> = React.memo(
-  function ThinkComponent({ content, className, isDone }) {
+  function ThinkComponent({ content, className, isDone, status }) {
     const [expanded, setExpanded] = React.useState(true);
     const trace = React.useMemo(() => parseReasoningTrace(content), [content]);
     const lastStepIndex = trace.steps.length - 1;
     const items = React.useMemo<ThoughtChainItemType[]>(
       () =>
-        trace.steps.map((step, index) => {
+        settleReasoningSteps(trace.steps, isDone).map((step, index) => {
           if (step.kind === 'reasoning') {
             return {
               key: step.key,
@@ -124,7 +131,7 @@ export const ThinkComponent: React.FC<ThinkComponentProps> = React.memo(
           <span className='reasoning-panel-symbol' aria-hidden='true'>
             {isDone ? '✧' : <LoadingOutlined spin />}
           </span>
-          <span>{isDone ? `已思考${duration}` : '生成中…'}</span>
+          <span>{!isDone ? '生成中…' : status === 'abort' ? '已停止' : status === 'error' ? '生成中断' : `已思考${duration}`}</span>
           <DownOutlined className='reasoning-panel-chevron' />
         </summary>
 

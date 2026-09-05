@@ -92,6 +92,30 @@ ai-agent/
 
 ## 模型调用层次
 
+### Tavily 调用与停止
+
+在 `ai-agent/.env` 中可配置每个 Agent 运行时的调用上限，Web 中即一轮回答。
+所有 Worker 和重规划共享计数；相同工具的相同查询复用结果，包括并发中的查询。
+
+```ini
+TAVILY_SEARCH_MAX_CALLS=20
+TAVILY_RESEARCH_MAX_CALLS=0
+TAVILY_EXTRACT_MAX_CALLS=10
+TAVILY_CRAWL_MAX_CALLS=2
+```
+
+以上为默认值，不填写也生效。达到上限时工具返回明确提示，Agent 应根据已有证据
+作答并说明资料缺口。这是调用次数限制，不是 Tavily 账单额度上限；MCP 工具不受这些变量控制。
+普通搜索使用 basic，每次最多返回 5 条；爬取每次最多 5 页。
+
+Tavily Research 会启动另外一套托管研究任务，默认不暴露给自动调度器。
+确需使用时，同时启用对应插件并设置 `TAVILY_RESEARCH_MAX_CALLS=1`，当前固定使用 mini。
+Research 按任务消耗额度，不等同于一次普通搜索。停止会中止本地 HTTP 请求和轮询，
+但无法撤销 Tavily 已受理的远程研究任务或其费用。
+
+工具 HTTP 请求有 60 秒超时，Research 最多轮询 50 次、间隔 5 秒；取消信号贯穿两者。
+LangSmith 记录外层工具调用，内部 HTTP/状态轮询不再生成独立工具条目。
+
 ### 底层聊天模型
 
 `createChatModel(config)` 根据 `provider` 创建 LangChain 客户端：

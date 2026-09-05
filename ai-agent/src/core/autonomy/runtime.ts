@@ -73,6 +73,7 @@ export function createAutonomousRuntime(options: AutonomousRuntimeOptions) {
     });
   }
 
+  const timeContext = `当前日期：${new Date().toISOString().slice(0, 10)}。检索现状时注明数据年份，不要默认旧年份就是最新。`;
   const hooks: WorkflowHooks = {
     async plan(context, config) {
       const catalog = Object.entries(policy.tools).map(([name, entry]) => ({
@@ -80,7 +81,7 @@ export function createAutonomousRuntime(options: AutonomousRuntimeOptions) {
         description: options.tools.find(t => t.name === name)?.description,
       }));
       const response = await planner.invoke([
-        new SystemMessage(`${options.systemPrompt}\n${PLANNING_PROMPT}\n能力清单：${JSON.stringify(catalog)}`),
+        new SystemMessage(`${options.systemPrompt}\n${timeContext}\n${PLANNING_PROMPT}\n能力清单：${JSON.stringify(catalog)}`),
         ...context.messages,
         new HumanMessage(JSON.stringify({
           stage: context.stage, version: context.version,
@@ -117,6 +118,8 @@ export function createAutonomousRuntime(options: AutonomousRuntimeOptions) {
         createWorkerPolicy(task, policy, options.validateWritePath), ...(options.workerMiddleware?.(task) ?? []), stopAfterSubmit,
       ], task);
       const prompt = [
+        timeContext,
+        '优先普通搜索和权威来源，证据充分后立即提交，不要穷尽搜索。全体 Worker 共享本轮工具预算，不要绕过限制。',
         '你是一个通用执行 Worker。以下任务规格决定本次临时职责，不能扩大权限或改变用户约束。',
         JSON.stringify({ task, dependencyResults: context.dependencyResults }),
         '逐项执行并检查 successCriteria。结束必须调用 submit_task_result，提供实际证据，不要只口头声称完成。',
@@ -160,6 +163,8 @@ export function createAutonomousRuntime(options: AutonomousRuntimeOptions) {
         ...config, recursionLimit: 150, streamMode: [...new Set([...modes, 'custom'])] as ('messages' | 'tools' | 'custom')[],
       });
       return (async function* () {
+        let planningId = '';
+        let planningSequence = 0;
         for await (const item of stream) {
           if (!Array.isArray(item)) continue;
           if (item[0] === 'messages') {
@@ -170,16 +175,19 @@ export function createAutonomousRuntime(options: AutonomousRuntimeOptions) {
           const event = item[1]?.autonomy as OrchestrationEvent | undefined;
           if (!event || !modes.includes('tools')) continue;
           const id = `${event.runId}:${event.version}:${event.taskId ?? `plan:${event.mode}`}`;
-          if (event.event === 'worker_started') {
+          if (event.event === 'run_started' || event.event === 'assessment') {
+            planningId = `${event.runId}:planning:${planningSequence++}`;
+            yield ['tools', { event: 'on_tool_start', name: 'plan_tasks', toolCallId: planningId,
+              input: { stage: event.event === 'run_started' ? '正在分析问题并规划任务' : '正在核验研究结果' } }];
+          } else if (event.event === 'worker_started') {
             yield ['tools', { event: 'on_tool_start', name: 'task', toolCallId: id,
               input: { role: event.task?.role, objective: event.task?.objective } }];
           } else if (event.event === 'worker_completed' || event.event === 'worker_failed') {
             yield ['tools', { event: event.event === 'worker_completed' ? 'on_tool_end' : 'on_tool_error',
               name: 'task', toolCallId: id, output: event.result, error: event.result?.summary }];
           } else if (event.event === 'plan_committed') {
-            yield ['tools', { event: 'on_tool_start', name: 'plan_tasks', toolCallId: id,
-              input: { mode: event.mode, tasks: event.tasks } }];
-            yield ['tools', { event: 'on_tool_end', name: 'plan_tasks', toolCallId: id, output: event.message }];
+            yield ['tools', { event: 'on_tool_end', name: 'plan_tasks', toolCallId: planningId || id,
+              output: `${event.mode} · ${event.tasks?.length ?? 0} 个工作包` }];
           }
         }
       })();

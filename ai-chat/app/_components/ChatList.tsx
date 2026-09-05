@@ -57,7 +57,7 @@ export const ChatList: React.FC<ChatListProps> = ({
                 i.message.content
               ),
             status: i.status,
-            loading: i.status === 'loading',
+            loading: i.status === 'loading' && !i.message.content,
             extraInfo: i.extraInfo,
           }))}
           role={getRole(className)}
