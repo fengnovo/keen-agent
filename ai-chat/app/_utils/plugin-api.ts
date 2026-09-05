@@ -19,7 +19,7 @@ export interface BuiltinPluginConfig extends BasePluginConfig {
 export interface ToolPluginConfig extends BasePluginConfig {
   type: 'tool';
   system: true;
-  implementation: 'tiandi_tongshou' | 'docker_sandbox';
+  implementation: string | 'docker_sandbox';
   toolNames: string[];
 }
 
@@ -94,7 +94,9 @@ const getErrorMessage = (payload: unknown, fallback: string): string => {
   if (Array.isArray(response.details) && response.details.length > 0) {
     return response.details
       .map(({ field, message }) =>
-        [field, message].filter((value) => typeof value === 'string').join(': '),
+        [field, message]
+          .filter((value) => typeof value === 'string')
+          .join(': '),
       )
       .filter(Boolean)
       .join('；');

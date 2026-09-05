@@ -227,13 +227,16 @@ const summarizeToolInput = (
 
   const record = normalizedInput as Record<string, unknown>;
   if (toolName === 'task') {
-    const role = compactTraceText(record.subagent_type);
-    const description = compactTraceText(record.description);
+    const role = compactTraceText(record.role ?? record.subagent_type);
+    const description = compactTraceText(record.objective ?? record.description);
     const summary = [role, description].filter(Boolean).join(' · ');
     return summary || undefined;
   }
   if (toolName === 'write_todos' && Array.isArray(record.todos)) {
     return `规划 ${record.todos.length} 个工作项`;
+  }
+  if (toolName === 'plan_tasks' && Array.isArray(record.tasks)) {
+    return `${record.mode ?? 'dag'} · ${record.tasks.length} 个工作包`;
   }
 
   for (const key of TOOL_INPUT_SUMMARY_KEYS) {

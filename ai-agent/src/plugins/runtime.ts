@@ -5,11 +5,7 @@ import type {
   SkillPluginConfig,
 } from '../config/plugin-config.ts';
 import { systemToolCatalog, type SystemTool } from './builtin-tools.ts';
-import {
-  loadMcpTools,
-  testMcpPlugin,
-  type McpTools,
-} from './mcp-loader.ts';
+import { loadMcpTools, testMcpPlugin, type McpTools } from './mcp-loader.ts';
 import { loadSkill, type LoadedSkill } from './skill-loader.ts';
 import { DockerSandboxBackend } from '../sandbox/docker-sandbox.ts';
 
@@ -56,9 +52,7 @@ export const resolvePlugins = async (
     (plugin) =>
       plugin.type === 'builtin' && plugin.implementation === 'deepagent',
   );
-  const toolPlugins = enabledPlugins.filter(
-    (plugin) => plugin.type === 'tool',
-  );
+  const toolPlugins = enabledPlugins.filter((plugin) => plugin.type === 'tool');
   const mcpPlugins = enabledPlugins.filter(
     (plugin): plugin is McpPluginConfig => plugin.type === 'mcp',
   );
@@ -69,8 +63,8 @@ export const resolvePlugins = async (
     (plugin) => plugin.implementation === 'docker_sandbox',
   );
   const tools = toolPlugins.flatMap((plugin) =>
-    plugin.implementation === 'tiandi_tongshou'
-      ? [systemToolCatalog[plugin.implementation]]
+    Object.keys(systemToolCatalog).includes(plugin.implementation)
+      ? [systemToolCatalog[plugin.implementation as keyof typeof systemToolCatalog]]
       : [],
   );
   const skills = await Promise.all(skillPlugins.map(loadSkill));
@@ -128,10 +122,7 @@ export const testPlugin = async (
     };
   }
 
-  if (
-    plugin.type === 'tool' &&
-    plugin.implementation === 'docker_sandbox'
-  ) {
+  if (plugin.type === 'tool' && plugin.implementation === 'docker_sandbox') {
     const sandbox = await DockerSandboxBackend.create({}, []);
     try {
       const result = await sandbox.execute(

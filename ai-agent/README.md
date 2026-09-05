@@ -116,30 +116,57 @@ ai-agent/
 - `thinkingEnabled`：选择“充分分析”或“优先直接回答”的系统提示策略。
 - `toolsEnabled`：当前会话的插件总开关。关闭时不会读取 Skill、连接 MCP 或暴露任何工具。
 - `subagentMaxTokens`：可选的子 Agent 单次输出预算；不影响主 Agent。
-- `subagentConcurrency`：子 Agent 的实际执行并发上限；超出的 `task` 在进程内排队。
+- `subagentConcurrency`：Worker 的实际执行并发上限，默认 2。
 - `subagentMaxRetries`：子 Agent 遇到断流、限流或临时 5xx 时的重试次数。
+- `maxReplans`：首次 DAG 后的重规划预算，默认 2，最多 5。
+- `onOrchestrationEvent`：接收真实计划、Worker 启停、验收和结束事件。
 
-当 `toolsEnabled` 和 `deepagent-core` 都开启时创建 DeepAgent，提供规划、临时文件工作区和任务委派等内置能力。关闭其中任意一项时改用普通 LangChain Agent，因此不是只靠提示词隐藏 DeepAgent 内置工具。
+当 `toolsEnabled` 和 `deepagent-core` 都开启时创建自主调度图，复用 DeepAgents 的文件、Skills、压缩和工具调用修复中间件。关闭其中任意一项时改用普通 LangChain Agent，实际移除这些内置能力。
 
 ### 多 Agent 编排
 
-`deepagents` 的 `task` 工具只提供委派机制，并不保证模型会主动拆解或并行执行。本项目在运行时额外完成三项配置：
+现在使用显式 LangGraph `StateGraph`，不再注册固定职业子 Agent，也没有复杂度关键词正则或“至少两个 task”的提示词 gate。
 
-- 显式注册 `todoListMiddleware()`，确保 Kimi、Qwen、DeepSeek 等没有内置 harness profile 的模型同样拥有 `write_todos`；
-- 注册 `planner`、`researcher`、`implementer`、`reviewer` 四种专职子 Agent 和一个 `general-purpose` 后备角色，让主 Agent 根据工作性质路由，而不是把所有任务都交给默认通用 Agent；
-- 注入协调协议：复杂任务先规划，独立工作包在同一模型回合并行调用多个 `task`，并行实现必须拥有互不重叠的文件范围，最后由主 Agent 汇总并交给 reviewer 独立复核。
+```text
+用户目标 → 主模型 plan_tasks
+             ├─ direct → 通用 Agent 自行执行 → 回答
+             ├─ dag → 校验 → 选择 ready 工作包 → Send 并发 Worker
+             │                                ↓
+             │             剩余 ready ← 合并结果；失败则回主模型重规划
+             │                                ↓
+             │                     主模型验收：finish / 新 DAG / blocked
+             └─ blocked → 说明缺少条件
+```
 
-协调协议仍属于模型指令，因此运行时还包含一个保守的确定性两阶段 gate：当用户请求明显包含多个工作流时，主 Agent 的第一个模型回合只暴露 `write_todos`，第二个模型回合只暴露 `task` 并要求并行派发独立工作包；子 Agent 返回后才恢复其他工具。简单请求不会经过该门，也不会为了形式强制创建子 Agent。网页生成任务已有“首个工具必须是 `write_file`”的更高优先级约束，因此不启用两阶段 gate，主 Agent 会在后续回合按协调协议补计划。
+- **模型负责决策**：选择直接执行还是拆分、任务数量、自由文本角色、目标、上下文、依赖、能力、写入范围和验收标准。每次 Worker 都由同一个 kernel 按任务规格创建，没有角色枚举。
+- **代码负责约束**：校验重复 ID、缺失依赖、环、未知能力与写入策略；依赖全部成功才调度。通过 `Send` 分批执行，不依赖模型一次发出多个工具调用。一个串行 DAG 完全合法。
+- **结果与恢复**：Worker 必须提交 `submit_task_result`，成功必须附带证据。失败批次全部结束后回主模型重规划，保留成功任务，不执行失败节点的后继。达到预算则 blocked，不假装成功。模型 HTTP/连接错误不会当作 DAG 格式错误反复纠正。
+- **上下文**：Worker 只得到任务上下文、前置结果和文件快照，不复制整段对话。StateBackend 只合并文件增量，避免旧快照覆盖其他成果。主模型最后检查结果并汇总，Worker 内部文本不会进入用户回答。
 
-子 Agent 使用隔离的消息上下文，但共享同一个受限文件 Backend。主 Agent 是唯一的协调者和最终责任人；子 Agent 不会彼此直接通信，它们通过返回报告和共享工作区与主 Agent 协作。
+Worker 单次输出由任务申请（默认 4096，schema 上限 8192），再取主模型预算与 `AI_SUBAGENT_MAX_TOKENS`/`subagentMaxTokens` 的较小值。每个 Worker 最多调用模型 16 次，直接执行最多 32 次。`AI_SUBAGENT_CONCURRENCY` 默认 2；`AI_SUBAGENT_MAX_RETRIES` 默认 2，仅重试临时模型请求，不自动重放整个有副作用任务。
 
-子 Agent 默认使用与主 Agent 相同的模型和连接，但单次输出限制为 8,192 tokens，避免多个并行上下文各自消耗主模型的超长输出预算。主 Agent 的输出上限不受影响。可用 `AI_SUBAGENT_MAX_TOKENS` 调整，也可通过 `createAgentRuntime(..., { subagentMaxTokens })` 按运行时覆盖。
+#### 权限与当前边界
 
-子 Agent 默认最多同时执行 2 个。主 Agent 仍可一次生成多个 `task` 调用，超额调用会排队，从而降低 Anthropic/OpenAI 兼容端点在多路流式请求下出现 `terminated`、`429` 或临时 `5xx` 的概率。临时错误默认指数退避重试 2 次；鉴权、参数校验等确定性错误会直接失败。可分别用 `AI_SUBAGENT_CONCURRENCY` 和 `AI_SUBAGENT_MAX_RETRIES` 覆盖，或传入同名运行时选项。
+只读 Worker 可以并行；所有写入、shell 和有副作用的外部工具独占执行批次，尚未实现隔离 worktree 的并行写入。文件工具在调用前检查能力和绝对路径前缀。未知外部工具默认按有副作用处理。shell 无法可靠限制单个文件，任务必须明确申请 `/mnt/user-data` 整个沙箱范围；这不是更细粒度的操作系统安全隔离。权限上限来自已启用插件及沙箱配置，模型不能创建未启用工具。
+
+失败后的外部副作用不会自动回滚；主模型被要求先检查实际状态，再规划修复。`MemorySaver` 只提供进程内检查点，不提供进程重启恢复或外部操作 exactly-once 保证。通用证据检查不是正确性证明；高风险操作仍需要宿主审批机制，业务结果仍需独立测试或人工确认。
+
+网页任务允许先 `plan_tasks`；源码创建执行者仍受先 `write_file` 的约束。不能将完整源码输出到思考或最终回答。UI 中的 `task` 是调度器发出的 Worker 执行事件，不是模型选择固定 `subagent_type` 的工具。
+
+这属于 LangGraph 上的动态 orchestrator–worker 模式，与 supervisor 模式同属协调架构，不是替代 LangGraph 的自研框架。差异在于：这里让模型提交显式依赖图，再由代码调度和校验；常见 supervisor 实现由模型逐次选择接下来交给谁。参见 [LangGraph 官方架构说明](https://docs.langchain.com/oss/javascript/langgraph/workflows-agents)。
 
 #### 自动验收
 
-先在 `ai-agent/.env` 中配置待测模型需要的密钥，然后运行：
+先运行无网络、无模型费用的确定性测试：
+
+```bash
+pnpm --filter @keen-agent/ai-agent test
+pnpm --filter @keen-agent/ai-agent typecheck
+```
+
+测试实际调度图与真实 Worker kernel，覆盖：四路独立任务分批并行、依赖顺序、合法串行、写入互斥、权限拒绝、失败重规划、成功保留、预算终止、取消传播、文件合并、流式隔离和错误轨迹检测。
+
+再在 `ai-agent/.env` 配置模型密钥，运行会产生模型费用的线上验收：
 
 ```bash
 pnpm --filter @keen-agent/ai-agent verify:multi-agent
@@ -148,17 +175,13 @@ pnpm --filter @keen-agent/ai-agent verify:multi-agent
 默认验证当前活动模型；也可以指定模型：
 
 ```bash
-MULTI_AGENT_VERIFY_MODEL_ID=deepseek-v4-pro pnpm --filter @keen-agent/ai-agent verify:multi-agent
+MULTI_AGENT_VERIFY_MODEL_ID=kimi-k3 pnpm --filter @keen-agent/ai-agent verify:multi-agent
+MULTI_AGENT_VERIFY_MODEL_ID=kimi-k3 MULTI_AGENT_VERIFY_CASE=direct pnpm --filter @keen-agent/ai-agent verify:multi-agent
 ```
 
-验收提示本身不会要求“使用多个 Agent”。脚本记录真实的 LangChain tools 流，只有同时满足以下条件才以退出码 0 通过：
+默认 `parallel` 场景提供四份独立的合成账本；用户提示不提 Agent、DAG 或并行。脚本记录 `onOrchestrationEvent` 的实际执行区间，并用独立代码计算净额校验最终 JSON。该场景明确检查真实并行；`direct` 场景检查简单算术回答，不要求委派。可用 `MULTI_AGENT_VERIFY_TIMEOUT_MS` 修改默认 10 分钟超时。
 
-1. `write_todos` 发生在首次 `task` 之前；
-2. 至少发起两个 `task`；
-3. 至少两个 `task` 的运行区间真实重叠，而不是串行调用；
-4. 所有委派均正常结束。
-
-这项验收测试的是模型在当前 Provider 上的自主编排行为。单元测试另外覆盖角色注册、协调协议和轨迹判定器，但单元测试通过不代表某个具体模型一定会遵循协议。
+轨迹判定检查计划先于执行、依赖成功后启动、并发上限、副作用互斥、委派收敛及主模型验收；最终答案另外通过业务 oracle 检查。曾发生失败但成功重规划的运行可以通过。单元测试通过不代表 kimi-k3 或任意模型一定能正确规划；单次线上通过也不是通用智能保证，应在实际业务任务集上多次验收。
 
 命令行聊天和 Web 的主模型回答都使用这个工厂。Web 会从当前会话读取上述开关，每次请求
 创建临时线程并注入服务端完整历史；命令行则在进程内持续复用同一线程。

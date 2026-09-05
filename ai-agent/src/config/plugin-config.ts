@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
 import { LOCAL_STATE_ROOT } from './paths.ts';
+import { systemToolCatalog } from '../plugins/builtin-tools.ts';
 
 const PLUGIN_CONFIG_VERSION = 1;
 const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -32,7 +33,7 @@ export const toolPluginSchema = z.object({
   ...basePluginShape,
   type: z.literal('tool'),
   system: z.literal(true),
-  implementation: z.enum(['tiandi_tongshou', 'docker_sandbox']),
+  implementation: z.enum([...Object.keys(systemToolCatalog), 'docker_sandbox']),
   toolNames: z.array(z.string().trim().min(1)).min(1),
 });
 
@@ -50,12 +51,7 @@ export const mcpPluginSchema = z
     ...basePluginShape,
     type: z.literal('mcp'),
     system: z.literal(false).default(false),
-    serverName: z
-      .string()
-      .trim()
-      .min(1)
-      .max(64)
-      .regex(MCP_SERVER_NAME_PATTERN),
+    serverName: z.string().trim().min(1).max(64).regex(MCP_SERVER_NAME_PATTERN),
     transport: z.enum(['stdio', 'http']),
     command: z.string().trim().min(1).optional(),
     args: z.array(z.string()).max(50).default([]),
@@ -146,6 +142,13 @@ export interface LoadedPluginRegistry {
 
 export const PLUGIN_CONFIG_FILE = join(LOCAL_STATE_ROOT, 'plugins.json');
 
+/**
+ * 系统工具插件 id 由工具名派生：下划线转连字符（如 tavily_search -> tavily-search），
+ * 须符合 PLUGIN_ID_PATTERN 且与磁盘上既有的 tiandi-tongshou 命名约定一致。
+ */
+export const systemToolPluginId = (toolName: string): string =>
+  toolName.replace(/_/g, '-');
+
 export const createDefaultPluginRegistry = (): PluginRegistry =>
   pluginRegistrySchema.parse({
     version: PLUGIN_CONFIG_VERSION,
@@ -154,11 +157,12 @@ export const createDefaultPluginRegistry = (): PluginRegistry =>
         id: 'deepagent-core',
         name: 'DeepAgent 内置工具',
         description:
-          '结构化规划、临时文件工作区、内容检索和具名子 Agent 协作等核心能力。',
+          '动态 DAG 规划、通用 Worker 协作、临时文件工作区和内容检索等核心能力。',
         type: 'builtin',
         system: true,
         implementation: 'deepagent',
         capabilities: [
+          'plan_tasks',
           'write_todos',
           'ls',
           'read_file',
@@ -171,16 +175,16 @@ export const createDefaultPluginRegistry = (): PluginRegistry =>
         ],
         enabled: true,
       },
-      {
-        id: 'tiandi-tongshou',
-        name: '天地同寿算法',
-        description: '项目示例计算工具：返回两个数之和再加 100。',
+      ...Object.values(systemToolCatalog).map((tool) => ({
+        id: systemToolPluginId(tool.name),
+        name: tool.name,
+        description: tool.description,
         type: 'tool',
         system: true,
-        implementation: 'tiandi_tongshou',
-        toolNames: ['tiandi_tongshou'],
+        implementation: tool.name,
+        toolNames: [tool.name],
         enabled: true,
-      },
+      })),
       {
         id: 'docker-sandbox',
         name: 'Docker 隔离执行器',
@@ -254,6 +258,14 @@ const migratePluginRegistry = (
     changed = true;
   }
 
+  if (
+    deepAgentCore?.type === 'builtin' &&
+    !deepAgentCore.capabilities.includes('plan_tasks')
+  ) {
+    deepAgentCore.capabilities.unshift('plan_tasks');
+    changed = true;
+  }
+
   const dockerSandbox = plugins.find(
     (plugin) => plugin.id === 'docker-sandbox' && plugin.type === 'tool',
   );
@@ -263,6 +275,24 @@ const migratePluginRegistry = (
   ) {
     dockerSandbox.toolNames.push('web-preview');
     changed = true;
+  }
+
+  // 为旧注册表补齐后续新增的系统工具：按 implementation 匹配，已存在（含已停用）不重复添加。
+  const toolImplementations = new Set(
+    plugins
+      .filter((plugin): plugin is ToolPluginConfig => plugin.type === 'tool')
+      .map((plugin) => plugin.implementation),
+  );
+  for (const defaultPlugin of createDefaultPluginRegistry().plugins) {
+    if (
+      defaultPlugin.type === 'tool' &&
+      defaultPlugin.system &&
+      !toolImplementations.has(defaultPlugin.implementation)
+    ) {
+      plugins.push(defaultPlugin);
+      toolImplementations.add(defaultPlugin.implementation);
+      changed = true;
+    }
   }
 
   return {

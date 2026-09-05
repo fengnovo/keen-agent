@@ -327,6 +327,11 @@ export class DockerSandboxBackend extends BaseSandbox {
     );
   }
 
+  /** Validate a scoped worker's write/delete path before entering BaseSandbox tools. */
+  async assertWritablePath(filePath: string): Promise<void> {
+    await this.resolveHostPath(filePath, true);
+  }
+
   async downloadFiles(paths: string[]): Promise<FileDownloadResponse[]> {
     // 二进制读取和 edit 的读阶段会走这里；符号链接必须在读取前拒绝，
     // 避免容器先创建链接再诱导宿主适配器读取链接目标。
@@ -548,14 +553,15 @@ export class DockerSandboxBackend extends BaseSandbox {
 
     // 防止容器创建的符号链接在宿主侧 upload/download 时逃逸沙箱根目录。
     let cursor = root;
-    const parts = relative(root, writable ? dirname(target) : target)
+    const parts = relative(root, target)
       .split(sep)
       .filter(Boolean);
     for (const part of parts) {
       cursor = join(cursor, part);
       try {
-        if ((await lstat(cursor)).isSymbolicLink()) {
-          throw Object.assign(new Error('不允许通过符号链接访问文件'), {
+        const info = await lstat(cursor);
+        if (info.isSymbolicLink() || (writable && info.isFile() && info.nlink > 1)) {
+          throw Object.assign(new Error('不允许通过符号链接或硬链接别名写入文件'), {
             code: 'EINVAL',
           });
         }

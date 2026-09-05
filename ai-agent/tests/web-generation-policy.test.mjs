@@ -17,7 +17,8 @@ test('recognizes explicit Chinese and English web generation requests', () => {
 });
 
 test('web generation contract forbids full source in reasoning', () => {
-  assert.match(WEB_GENERATION_SYSTEM_PROMPT, /第一次工具调用必须是 write_file/);
+  assert.match(WEB_GENERATION_SYSTEM_PROMPT, /第一次工作工具调用必须是 write_file/);
+  assert.match(WEB_GENERATION_SYSTEM_PROMPT, /可以先调用 plan_tasks/);
   assert.match(WEB_GENERATION_SYSTEM_PROMPT, /思考内容和最终回答都禁止输出完整源码/);
 });
 

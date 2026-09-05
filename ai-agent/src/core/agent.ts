@@ -1,7 +1,6 @@
 // ---------- Agent 配置模块 ----------
-// 负责初始化聊天模型、定义自定义工具并创建 DeepAgent
+// 负责初始化聊天模型、加载工具并创建自主调度运行时
 
-import { createDeepAgent } from 'deepagents';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { type CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import { MemorySaver } from '@langchain/langgraph-checkpoint';
@@ -9,7 +8,6 @@ import { ChatOpenAI } from '@langchain/openai';
 import {
   createAgent as createLangChainAgent,
   createMiddleware,
-  todoListMiddleware,
   type ModelRequest,
 } from 'langchain';
 
@@ -30,12 +28,8 @@ import {
   type PublishedArtifact,
   type PublishedPreview,
 } from '../sandbox/index.ts';
-import {
-  createComplexPlanningMiddleware,
-  createOrchestrationSubagents,
-  createTaskConcurrencyMiddleware,
-  MULTI_AGENT_ORCHESTRATION_PROMPT,
-} from './orchestration.ts';
+import { createAutonomousRuntime } from './autonomy/runtime.ts';
+import type { OrchestrationEvent } from './autonomy/workflow.ts';
 
 /** 所有调用路径都会使用的基础提示词，与会话能力开关无关。 */
 const BASE_SYSTEM_PROMPT = [
@@ -47,7 +41,7 @@ const BASE_SYSTEM_PROMPT = [
 export const WEB_GENERATION_SYSTEM_PROMPT = [
   '<web_generation_contract>',
   '这是网页生成任务的硬性执行约束：',
-  '1. 第一次工具调用必须是 write_file，直接在工作区写入页面源码；在 write_file 成功前禁止调用 ls、read_file、execute、task 或其他工具。',
+  '1. 可以先调用 plan_tasks 规划。承担页面源码创建的执行者第一次工作工具调用必须是 write_file，直接在工作区写入页面源码；在 write_file 成功前禁止调用 ls、read_file、execute 或其他工作工具。只读分析和后续构建任务不受首写约束。',
   '2. HTML、CSS、JavaScript、TypeScript、JSX/TSX 等完整源码只能出现在 write_file 或 edit_file 的工具参数中。',
   '3. 思考内容和最终回答都禁止输出完整源码、长代码块或逐文件粘贴源码；只允许简短说明设计与执行进度。',
   '4. 文件写好后再构建并发布到 /mnt/user-data/previews；最终回答只需概述结果并引用系统生成的预览或产物链接。',
@@ -128,10 +122,14 @@ export interface AgentFeatures {
   webGenerationRequested?: boolean;
   /** 子 Agent 单次输出预算；与主 Agent 分离，防止并行任务失控拖慢整轮。 */
   subagentMaxTokens?: number;
-  /** 同时真正执行的子 Agent 数；超出的 task 会在进程内排队。 */
+  /** 同时真正执行的 Worker 数；由调度图分批启动 ready 任务。 */
   subagentConcurrency?: number;
   /** 子 Agent 临时模型调用错误的最大重试次数。 */
   subagentMaxRetries?: number;
+  /** 首次 DAG 之后允许的重规划次数，默认 2，最大 5。 */
+  maxReplans?: number;
+  /** 真实调度事件，用于观测与验收，不是模型生成的日志。 */
+  onOrchestrationEvent?: (event: OrchestrationEvent) => void;
 }
 
 /** ChatService 与命令行只依赖 Agent 共有的流式和状态接口。 */
@@ -359,7 +357,6 @@ export const createAgentRuntime = async (
     sandboxRuntimePrompt,
     features.webGenerationRequested ? WEB_GENERATION_SYSTEM_PROMPT : '',
     pluginWarningPrompt,
-    plugins.deepAgentEnabled ? MULTI_AGENT_ORCHESTRATION_PROMPT : '',
     `当前运行模型名称：${config.name}`,
     `当前运行模型标识：${config.model}`,
     '当用户询问当前使用的模型时，必须依据以上当前配置回答，不要沿用历史消息中的模型身份。',
@@ -440,52 +437,27 @@ export const createAgentRuntime = async (
         configuredSubagentMaxRetries >= 0
           ? Math.min(configuredSubagentMaxRetries, 8)
           : DEFAULT_SUBAGENT_MAX_RETRIES;
-      const subagentModel = createChatModel({
-        ...config,
-        // 子 Agent 统一交给 middleware 做可观测的选择性重试，
-        // 避免 SDK 内层重试与外层指数退避相乘。
-        maxRetries: 0,
-        maxTokens: Math.min(config.maxTokens, requestedSubagentMaxTokens),
-      });
-      const agent = createDeepAgent({
+      const agent = createAutonomousRuntime({
         model,
+        workerModel: maxTokens => createChatModel({
+          ...config, maxRetries: 0,
+          maxTokens: Math.min(config.maxTokens, requestedSubagentMaxTokens, maxTokens),
+        }),
         tools: allTools,
         systemPrompt,
-        // task 不再只有一个无差别的 general-purpose 目标；主模型必须根据
-        // 工作性质在规划、调研、实现和复核角色之间做出明确路由决策。
-        subagents: createOrchestrationSubagents(
-          allTools,
-          skillSources,
-          subagentModel,
-          subagentMaxRetries,
-        ),
-        checkpointer: new MemorySaver(),
-        // 没有沙箱时使用 StateBackend；有沙箱时 Skill 已物化为只读挂载。
         backend: sandbox,
+        validateWritePath: sandbox?.assertWritablePath.bind(sandbox),
         skills: skillSources,
-        // deepagents 1.13 不会再为任意模型默认启用 write_todos；显式注册后，
-        // Kimi、Qwen、DeepSeek 等兼容端点也拥有同一套规划能力。
-        middleware: [
-          todoListMiddleware(),
-          createTaskConcurrencyMiddleware(subagentConcurrency),
-          ...(!features.webGenerationRequested
-            ? [
-                createComplexPlanningMiddleware(
-                  config.provider,
-                  config.model,
-                  subagentConcurrency,
-                ),
-              ]
-            : []),
-          ...(features.webGenerationRequested
-            ? [
-                createWebGenerationWriteFirstMiddleware(
-                  config.provider,
-                  config.model,
-                ),
-              ]
-            : []),
-        ],
+        shellEnabled: Boolean(sandbox),
+        maxConcurrency: subagentConcurrency,
+        maxRetries: subagentMaxRetries,
+        maxReplans: features.maxReplans,
+        onEvent: features.onOrchestrationEvent,
+        directMiddleware: features.webGenerationRequested
+          ? [createWebGenerationWriteFirstMiddleware(config.provider, config.model)] : [],
+        workerMiddleware: task => features.webGenerationRequested &&
+          task.capabilities.includes('filesystem_write') && task.dependencies.length === 0
+          ? [createWebGenerationWriteFirstMiddleware(config.provider, config.model)] : [],
       });
 
       return {
