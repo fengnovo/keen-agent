@@ -157,12 +157,11 @@ export const createDefaultPluginRegistry = (): PluginRegistry =>
         id: 'deepagent-core',
         name: 'DeepAgent 内置工具',
         description:
-          '动态 DAG 规划、通用 Worker 协作、临时文件工作区和内容检索等核心能力。',
+          '动态任务委托、临时文件工作区和内容检索等核心能力。',
         type: 'builtin',
         system: true,
         implementation: 'deepagent',
         capabilities: [
-          'plan_tasks',
           'write_todos',
           'ls',
           'read_file',
@@ -255,14 +254,6 @@ const migratePluginRegistry = (
     !deepAgentCore.capabilities.includes('write_todos')
   ) {
     deepAgentCore.capabilities.unshift('write_todos');
-    changed = true;
-  }
-
-  if (
-    deepAgentCore?.type === 'builtin' &&
-    !deepAgentCore.capabilities.includes('plan_tasks')
-  ) {
-    deepAgentCore.capabilities.unshift('plan_tasks');
     changed = true;
   }
 

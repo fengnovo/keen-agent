@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const { loadEnvConfig } = nextEnv;
 const AI_CHAT_DIRECTORY = fileURLToPath(new URL('../', import.meta.url));
-const DEFAULT_AI_SERVER_URL = 'http://127.0.0.1:3001';
+const DEFAULT_AI_SERVER_URL = 'http://127.0.0.1:3011';
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 
 const normalizeBaseUrl = (value) => value.trim().replace(/\/$/, '');

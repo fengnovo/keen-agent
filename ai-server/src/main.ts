@@ -13,7 +13,7 @@ dotenv.config({
 });
 
 const parsePort = (value: string | undefined): number => {
-  const port = Number(value ?? 3001);
+  const port = Number(value ?? 3011);
 
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error(`AI_SERVER_PORT 不是有效端口：${value}`);
@@ -28,7 +28,7 @@ const bootstrap = async () => {
   const host = process.env.AI_SERVER_HOST?.trim() || '127.0.0.1';
   const allowedOrigins = (
     process.env.AI_CHAT_ORIGIN ??
-    'http://localhost:3000,http://127.0.0.1:3000'
+    'http://localhost:3010,http://127.0.0.1:3010'
   )
     .split(',')
     .map((origin) => origin.trim())

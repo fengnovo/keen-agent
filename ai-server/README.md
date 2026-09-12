@@ -5,9 +5,9 @@ Nest API 直接读写根目录 `.keen-agent/models.json` 和 `.keen-agent/plugin
 Docker 沙箱的完整请求流程、信任边界、产物/预览 API 和新增文件目录见
 [沙箱执行、产物下载与页面预览架构](../docs/sandbox-architecture.md)。
 
-默认地址为 `http://127.0.0.1:3001/api`，可使用以下环境变量覆盖：
+默认地址为 `http://127.0.0.1:3011/api`，可使用以下环境变量覆盖：
 
-- `AI_SERVER_PORT`：监听端口，默认 `3001`
+- `AI_SERVER_PORT`：监听端口，默认 `3011`
 - `AI_SERVER_HOST`：监听地址，默认 `127.0.0.1`
 - `AI_CHAT_ORIGIN`：允许跨域访问的前端来源，多个来源以逗号分隔
 - `MODEL_CONFIG_PATH`：模型配置文件路径，主要用于测试或自定义部署

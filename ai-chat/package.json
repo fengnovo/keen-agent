@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/wait-for-ai-server.mjs && next dev",
+    "dev": "node scripts/wait-for-ai-server.mjs && next dev -p 3010",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3010",
     "lint": "eslint",
     "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit"

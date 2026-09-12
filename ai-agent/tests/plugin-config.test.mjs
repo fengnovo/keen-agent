@@ -16,7 +16,6 @@ test('advertises write_todos as a DeepAgent core capability', () => {
 
   assert.equal(core?.type, 'builtin');
   assert.ok(core.capabilities.includes('write_todos'));
-  assert.ok(core.capabilities.includes('plan_tasks'));
 });
 
 test('syncs newly added system tools into an existing registry', async (t) => {
@@ -74,7 +73,7 @@ test('migrates an existing registry to include write_todos', async (t) => {
   );
   assert.equal(core?.type, 'builtin');
   core.capabilities = core.capabilities.filter(
-    (capability) => !['write_todos', 'plan_tasks'].includes(capability),
+    (capability) => capability !== 'write_todos',
   );
   await writeFile(filePath, JSON.stringify(registry));
 
@@ -90,6 +89,4 @@ test('migrates an existing registry to include write_todos', async (t) => {
   assert.equal(loadedCore.type, 'builtin');
   assert.ok(loadedCore.capabilities.includes('write_todos'));
   assert.ok(persistedCore.capabilities.includes('write_todos'));
-  assert.ok(loadedCore.capabilities.includes('plan_tasks'));
-  assert.ok(persistedCore.capabilities.includes('plan_tasks'));
 });

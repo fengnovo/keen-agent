@@ -1,6 +1,6 @@
 import type { NextConfig } from 'next';
 
-const aiServerUrl = (process.env.AI_SERVER_URL || 'http://127.0.0.1:3001')
+const aiServerUrl = (process.env.AI_SERVER_URL || 'http://127.0.0.1:3011')
   .trim()
   .replace(/\/$/, '');
 

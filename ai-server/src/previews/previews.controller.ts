@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { createReadStream } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 
 import { PreviewsService } from './previews.service.js';
 
@@ -26,6 +27,14 @@ const PREVIEW_CSP = [
   "worker-src 'none'",
   'sandbox allow-scripts allow-modals',
 ].join('; ');
+
+/**
+ * 构建产物可能使用站点根绝对路径（如 /assets/index.js）而非相对路径。
+ * 预览页挂载在带随机 token 的子路径下，绝对路径会落到前端站点根而 404。
+ * 这里把 src/href 的根绝对引用改写为相对路径，使资源回到当前预览目录解析。
+ */
+const rewriteRootAbsoluteRefs = (html: string): string =>
+  html.replace(/\b(src|href)=(["'])\/(?!\/)([^"']*)\2/g, '$1=$2./$3$2');
 
 @Controller('previews')
 export class PreviewsController {
@@ -77,6 +86,18 @@ export class PreviewsController {
       'Permissions-Policy',
       'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
     );
+
+    // HTML 入口需要把根绝对资源引用改写为相对路径，避免落到前端站点根。
+    if (preview.mimeType.startsWith('text/html')) {
+      const html = rewriteRootAbsoluteRefs(
+        await readFile(preview.filePath, 'utf8'),
+      );
+      response.setHeader('Content-Length', Buffer.byteLength(html));
+      return new StreamableFile(Buffer.from(html), {
+        type: preview.mimeType,
+        disposition: 'inline',
+      });
+    }
 
     return new StreamableFile(createReadStream(preview.filePath), {
       type: preview.mimeType,
