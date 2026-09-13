@@ -26,6 +26,9 @@ const resumeSchema = z.object({
   }),
 });
 
+/** SSE 保活间隔：必须明显小于前端 streamTimeout（当前 310s）。 */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
 /** 把 Agent 文本块包装为前端 Provider 已支持的 OpenAI 兼容事件。 */
 const createSsePayload = (
   model: string,
@@ -99,14 +102,21 @@ export class ChatController {
     response.setHeader('Connection', 'keep-alive');
     response.flushHeaders();
 
-    // Agent 等待 MCP 工具或模型首块时可能长时间没有数据；按固定间隔发送 SSE
-    // 注释行（冒号开头，EventSource 与前端解析器都会忽略），让 Next dev 代理等
-    // 中间链路的空闲超时不会误杀仍在运行的流。
+    // Agent 等待长工具（Docker 构建、MCP 调用、子 Agent）或模型首块时可能数分钟没有
+    // 内容产出。这里按固定间隔发送两类保活信号：
+    // 1. SSE 注释行（冒号开头）：让 Next dev 代理等中间链路的空闲超时不会掐断流。
+    // 2. 空的 OpenAI 兼容 delta 块：前端的 streamTimeout 是"两个 chunk 之间的空闲
+    //    上限"，只在解析出真实事件时才会重置，纯注释行无法续命（会被解析器丢弃）。
     const heartbeat = setInterval(() => {
       if (!response.writableEnded && !response.destroyed) {
         response.write(': ping\n\n');
+        response.write(
+          `data: ${JSON.stringify(
+            createSsePayload(prepared.model.model, {}),
+          )}\n\n`,
+        );
       }
-    }, 15_000);
+    }, HEARTBEAT_INTERVAL_MS);
     heartbeat.unref();
 
     try {

@@ -7,11 +7,11 @@ import { stdin as input, stdout as output } from 'node:process';
 import { select } from '@inquirer/prompts';
 import { isBaseMessage } from '@langchain/core/messages';
 
+import { createAgentRuntime } from '../core/agent.ts';
 import {
-  createAgentRuntime,
-  createLivenessCallback,
+  createLivenessWatchdog,
   type LivenessPhase,
-} from '../core/agent.ts';
+} from '../core/liveness.ts';
 import { publishLocalArtifact } from '../sandbox/index.ts';
 import {
   CONVERSATION_FILE,
@@ -39,20 +39,21 @@ import {
 // 加载动画实例：用于在等待模型响应时展示动态进度
 const loading = createLoading();
 
-const getModelGeneratingTimeoutMs = (): number => {
-  const value = Number(
-    process.env.AI_AGENT_MODEL_TIMEOUT_MS || 15 * 60_000,
-  );
-  return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
-    ? value
-    : 15 * 60_000;
-};
-
-const getIdleTimeoutMs = (): number => {
-  const value = Number(process.env.AI_AGENT_IDLE_TIMEOUT_MS || 3 * 60_000);
-  return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
-    ? value
-    : 3 * 60_000;
+/**
+ * 超时提示：与 Chat 服务端保持同样的阶段语义，避免把长工具执行说成卡死。
+ */
+const createTimeoutNotice = (
+  phase: LivenessPhase,
+  timeoutMs: number,
+): string => {
+  const minutes = Math.max(1, Math.round(timeoutMs / 60_000));
+  if (phase === 'model-generating') {
+    return `模型生成超时：连续 ${minutes} 分钟没有收到模型输出，请重试本轮。`;
+  }
+  if (phase === 'tool-running') {
+    return `工具执行超时：连续 ${minutes} 分钟没有收到工具返回结果，已中止本轮。请检查上方工具输出后重试。`;
+  }
+  return `长时间无响应：连续 ${minutes} 分钟没有任何进展，请重试本轮或把任务拆小。`;
 };
 
 const createCliAgentRuntime = (model: ModelConfig) =>
@@ -326,24 +327,9 @@ export const runConversation = async () => {
 
     loading.start('正在等待模型响应...');
 
-    // 两级超时：model-generating 宽裕（15 min），idle 短（3 min）
-    const idleController = new AbortController();
-    let timer: NodeJS.Timeout | undefined;
-    let currentPhase: LivenessPhase = 'idle';
-
-    const armTimer = (phase: LivenessPhase) => {
-      currentPhase = phase;
-      if (timer) clearTimeout(timer);
-      const ms =
-        phase === 'model-generating'
-          ? getModelGeneratingTimeoutMs()
-          : getIdleTimeoutMs();
-      timer = setTimeout(() => idleController.abort(), ms);
-    };
-    armTimer('idle');
-
-    // LangChain callback：token 级别活跃信号，弥补 stream event 稀疏
-    const livenessCallback = createLivenessCallback((phase) => armTimer(phase));
+    // 分阶段看门狗：模型生成 15 min、工具执行 30 min、步骤间空闲 3 min。
+    // 工具自身已有超时，外层只兜底"永远不返回"，避免长命令被误杀。
+    const watchdog = createLivenessWatchdog();
 
     try {
       // 每轮只提交新增的用户消息，历史由 checkpointer 根据 thread_id 自动恢复
@@ -362,13 +348,13 @@ export const runConversation = async () => {
         {
           configurable: { thread_id: threadId },
           streamMode: ['messages', 'tools'],
-          signal: idleController.signal,
-          callbacks: [livenessCallback],
+          signal: watchdog.signal,
+          callbacks: [watchdog.callback],
         },
       );
 
       for await (const event of stream) {
-        armTimer(currentPhase);
+        watchdog.reset();
         if (!Array.isArray(event) || event.length < 2) continue;
         const [mode, payload] = event;
         loading.stop();
@@ -387,6 +373,9 @@ export const runConversation = async () => {
         handleToolEvent(payload);
       }
 
+      // Agent 循环结束，后续产物收集不再参与"是否卡死"的判定。
+      watchdog.pause();
+
       const artifacts = await agentRuntime.collectArtifacts();
       if (artifacts.length > 0) {
         resetMessageSection();
@@ -395,12 +384,20 @@ export const runConversation = async () => {
           console.log(`- ${artifact.name}: ${artifact.url}`);
         }
       }
-      const previews = await agentRuntime.collectPreviews();
+      const { published: previews, skipped: skippedPreviews } =
+        await agentRuntime.collectPreviews();
       if (previews.length > 0) {
         resetMessageSection();
         console.log('\n生成的网站预览：');
         for (const preview of previews) {
           console.log(`- ${preview.name}: ${preview.url}`);
+        }
+      }
+      if (skippedPreviews.length > 0) {
+        resetMessageSection();
+        console.log('\n未发布的网页预览：');
+        for (const item of skippedPreviews) {
+          console.log(`- ${item.name}：${item.reason}`);
         }
       }
 
@@ -427,6 +424,17 @@ export const runConversation = async () => {
       loading.stop();
       resetMessageSection();
 
+      if (watchdog.timedOut()) {
+        console.error(
+          `\n${terminalColor.error('[本轮对话超时]')} ${createTimeoutNotice(
+            watchdog.phase(),
+            watchdog.timeoutMs(),
+          )}`,
+        );
+        // 超时只结束本轮，继续等待下一次输入。
+        continue;
+      }
+
       const errorDetails =
         error instanceof Error
           ? (error.stack ?? `${error.name}: ${error.message}`)
@@ -436,7 +444,7 @@ export const runConversation = async () => {
       console.error(errorDetails);
     } finally {
       loading.stop();
-      if (timer) clearTimeout(timer);
+      watchdog.dispose();
     }
   }
 };

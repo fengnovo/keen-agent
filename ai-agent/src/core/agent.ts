@@ -2,7 +2,6 @@
 // 负责初始化聊天模型、加载工具并创建 DeepAgent 运行时
 
 import { ChatAnthropic } from '@langchain/anthropic';
-import { type CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import { tool } from '@langchain/core/tools';
 import { MemorySaver } from '@langchain/langgraph-checkpoint';
 import { interrupt, Command } from '@langchain/langgraph';
@@ -31,8 +30,10 @@ import {
   publishLocalArtifact,
   publishLocalPreview,
   type AgentSandboxOptions,
+  type PreviewCollectionResult,
   type PublishedArtifact,
   type PublishedPreview,
+  type SandboxSkippedPreview,
 } from '../sandbox/index.ts';
 
 /** 所有调用路径都会使用的基础提示词，与会话能力开关无关。 */
@@ -220,39 +221,13 @@ export interface AgentRuntime {
   sandboxEnabled: boolean;
   /** 扫描 outputs 并发布尚未登记的产物，可安全重复调用。 */
   collectArtifacts: () => Promise<PublishedArtifact[]>;
-  /** 扫描 previews 并发布包含 index.html 的静态网站。 */
-  collectPreviews: () => Promise<PublishedPreview[]>;
+  /** 扫描 previews 并发布含 index.html 的静态网站；不合格的目录只跳过并返回原因。 */
+  collectPreviews: () => Promise<PreviewCollectionResult>;
   close: () => Promise<void>;
 }
 
-/**
- * Liveness 信号阶段：
- * - `model-generating`：模型正在生成（含 thinking / tool-call args），
- *   部分供应商不流式输出 tool-call 参数，此时 stream 不会有 event，
- *   但 callback 仍会触发 handleLLMStart / handleLLMNewToken。
- * - `idle`：模型回合结束、等待下一步（工具执行或下一轮模型调用），
- *   短时间无响应是正常的，但持续静默应被视为卡死。
- */
-export type LivenessPhase = 'model-generating' | 'idle';
-
-export type LivenessPulse = (phase: LivenessPhase) => void;
-
-/**
- * 创建 LangChain callback，在模型 token 级别上报活跃信号。
- * 用于在 stream event 稀疏时（如供应商不流式 tool-call 参数）
- * 仍能区分"模型正在生成"与"真正卡死"。
- */
-export const createLivenessCallback = (
-  pulse: LivenessPulse,
-): CallbackHandlerMethods => ({
-  handleLLMStart: () => pulse('model-generating'),
-  handleChatModelStart: () => pulse('model-generating'),
-  handleLLMNewToken: () => pulse('model-generating'),
-  handleChatModelStreamEvent: () => pulse('model-generating'),
-  handleLLMEnd: () => pulse('idle'),
-  handleToolStart: () => pulse('idle'),
-  handleToolEnd: () => pulse('idle'),
-});
+// 活跃度阶段与看门狗见 ./liveness.ts：模型生成、工具执行、步骤间空闲分别计时，
+// 避免工具正常执行时的静默被误判为卡死。
 
 const toSkillFiles = (skills: LoadedSkill[]): AgentRuntime['skillFiles'] => {
   if (skills.length === 0) return undefined;
@@ -392,8 +367,9 @@ export const createAgentRuntime = async (
         '默认工作目录为 /mnt/user-data/workspace。不要尝试访问宿主机或 Docker socket。',
         '生成 PPTX、PDF、DOCX、XLSX、图片、压缩包或代码文件后，务必把最终产物放进 /mnt/user-data/outputs。',
         '生成官网或其他前端页面时，先用文件工具在工作区创建用户要求的源码，再运行 prepare-web-project <目录> 连接离线 React/Vite 依赖，修改后执行 npm run build，',
-        '再把 dist 内容复制到 /mnt/user-data/previews/<预览名称>/；其中必须包含 index.html，系统会自动嵌入页面预览。',
+        '再把构建产物复制到 /mnt/user-data/previews/<预览名称>/：可以直接复制 dist 里的内容，也可以整个复制 dist 目录，系统会自动识别其中的 index.html。',
         'prepare-web-project 不会生成页面内容。不要执行 npm install，也不要长期启动 npm run dev；沙箱断网且命令容器是短生命周期，使用 npm run build 发布静态站点。',
+        '如果 npm run build 或复制失败，必须如实说明失败原因和缺失步骤，不得声称已经构建完成或已经生成预览。',
       ].join('\n')
     : plugins.sandboxEnabled && !plugins.deepAgentEnabled
       ? 'Docker 隔离执行器依赖 DeepAgent 内置文件工具；当前 DeepAgent 核心已关闭，因此本轮不能执行命令。'
@@ -445,20 +421,32 @@ export const createAgentRuntime = async (
 
     return collected;
   };
-  const collectPreviews = async (): Promise<PublishedPreview[]> => {
-    if (!sandbox) return [];
-    const collected: PublishedPreview[] = [];
+  const collectPreviews = async (): Promise<PreviewCollectionResult> => {
+    if (!sandbox) return { published: [], skipped: [] };
 
-    for (const preview of await sandbox.listPreviewDirectories()) {
+    const published: PublishedPreview[] = [];
+    const scan = await sandbox.listPreviewDirectories();
+    // 无法解析入口或校验失败的目录按"跳过"回报，不中断其他站点的发布。
+    const skipped: SandboxSkippedPreview[] = [...scan.skipped];
+
+    for (const preview of scan.previews) {
       if (publishedPreviewPaths.has(preview.absolutePath)) continue;
-      const published = await (
-        features.sandbox?.publishPreview ?? publishLocalPreview
-      )(preview);
-      publishedPreviewPaths.add(preview.absolutePath);
-      collected.push(published);
+      try {
+        published.push(
+          await (features.sandbox?.publishPreview ?? publishLocalPreview)(
+            preview,
+          ),
+        );
+        publishedPreviewPaths.add(preview.absolutePath);
+      } catch (error) {
+        skipped.push({
+          name: preview.name,
+          reason: error instanceof Error ? error.message : '网站预览发布失败',
+        });
+      }
     }
 
-    return collected;
+    return { published, skipped };
   };
   let closed = false;
   const close = async (): Promise<void> => {

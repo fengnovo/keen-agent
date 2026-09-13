@@ -6,12 +6,34 @@ export interface SandboxOutputFile {
   size: number;
 }
 
-/** previews 下一个包含 index.html 的可发布静态网站目录。 */
+/**
+ * previews 下一个可发布的静态网站目录。
+ * absolutePath 是真正含 index.html 的站点根：可能是预览目录本身，
+ * 也可能是其中的 dist/、build/ 等构建输出目录。
+ */
 export interface SandboxPreviewDirectory {
   absolutePath: string;
   name: string;
   fileCount: number;
   size: number;
+}
+
+/** 被跳过的预览目录：单个站点不合格不应让整轮发布失败。 */
+export interface SandboxSkippedPreview {
+  name: string;
+  reason: string;
+}
+
+/** previews 扫描结果：可发布的站点 + 被跳过的目录及原因。 */
+export interface SandboxPreviewScan {
+  previews: SandboxPreviewDirectory[];
+  skipped: SandboxSkippedPreview[];
+}
+
+/** 一轮聊天结束后的预览发布结果。 */
+export interface PreviewCollectionResult {
+  published: PublishedPreview[];
+  skipped: SandboxSkippedPreview[];
 }
 
 /** 产物发布器返回给聊天层的稳定下载信息。 */

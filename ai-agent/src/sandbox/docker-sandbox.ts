@@ -25,6 +25,8 @@ import type {
   AgentSandboxOptions,
   SandboxOutputFile,
   SandboxPreviewDirectory,
+  SandboxPreviewScan,
+  SandboxSkippedPreview,
 } from './types.ts';
 
 const DEFAULT_IMAGE = 'keen-agent-sandbox:latest';
@@ -36,6 +38,11 @@ const MAX_OUTPUT_TREE_ENTRIES = 2_000;
 const MAX_OUTPUT_TREE_DEPTH = 20;
 const MAX_OUTPUT_TOTAL_BYTES = 250 * 1024 * 1024;
 const MAX_PREVIEW_COUNT = 5;
+/**
+ * previews/<名称>/ 下寻找站点入口的顺序：目录本身，以及常见的构建输出目录。
+ * 模型常把整个 dist 目录复制进来，兼容这种情况可避免"缺少 index.html"的误判。
+ */
+const PREVIEW_ENTRY_DIRECTORIES = ['', 'dist', 'build', 'out'] as const;
 const MAX_PREVIEW_FILES = 2_000;
 const MAX_PREVIEW_BYTES = 100 * 1024 * 1024;
 const CONTAINER_USER = '65532:65532';
@@ -413,75 +420,124 @@ export class DockerSandboxBackend extends BaseSandbox {
   }
 
   /**
-   * 只把 previews 的一级子目录作为网站；每个目录必须包含普通 index.html。
-   * 发布前完整遍历并拒绝符号链接、过深目录和超限站点。
+   * 扫描 previews 的一级子目录，解析出可发布的静态站点。
+   *
+   * 入口查找顺序：目录本身 → dist/ → build/ → out/。模型经常把整个构建输出目录
+   * （如 Vite 的 dist）直接复制进 previews，此时站点根在子目录里，属于可正常发布的
+   * 情况，不能判成"缺少 index.html"。
+   *
+   * 单个目录不合格（没有 index.html、含符号链接、超限）只会被跳过并记录原因，
+   * 不会让整轮预览发布失败，也不会连累同一轮里其他合格的站点。
    */
-  async listPreviewDirectories(): Promise<SandboxPreviewDirectory[]> {
+  async listPreviewDirectories(): Promise<SandboxPreviewScan> {
     const candidates = await readdir(this.previewsRoot, {
       withFileTypes: true,
     });
     const previews: SandboxPreviewDirectory[] = [];
+    const skipped: SandboxSkippedPreview[] = [];
 
     for (const candidate of candidates) {
       if (candidate.isSymbolicLink() || !candidate.isDirectory()) continue;
       if (previews.length >= MAX_PREVIEW_COUNT) {
-        throw new Error(`每轮最多发布 ${MAX_PREVIEW_COUNT} 个网站预览`);
+        skipped.push({
+          name: candidate.name,
+          reason: `每轮最多发布 ${MAX_PREVIEW_COUNT} 个网站预览`,
+        });
+        continue;
       }
 
-      const previewRoot = join(this.previewsRoot, candidate.name);
-      const indexInfo = await lstat(join(previewRoot, 'index.html')).catch(
-        () => undefined,
-      );
-      if (!indexInfo?.isFile() || indexInfo.isSymbolicLink()) {
-        throw new Error(`网站预览 ${candidate.name} 缺少普通 index.html`);
+      const directory = join(this.previewsRoot, candidate.name);
+      try {
+        const siteRoot = await this.resolvePreviewSiteRoot(directory);
+        if (!siteRoot) {
+          skipped.push({
+            name: candidate.name,
+            reason:
+              '目录里没有 index.html（Vite/React 项目请先执行 npm run build，' +
+              '再把 dist 内容复制到该目录）',
+          });
+          continue;
+        }
+
+        const stats = await this.measurePreviewTree(siteRoot, candidate.name);
+        previews.push({
+          absolutePath: siteRoot,
+          name: candidate.name,
+          ...stats,
+        });
+      } catch (error) {
+        // 校验失败只影响这一个站点，其余站点继续发布。
+        skipped.push({
+          name: candidate.name,
+          reason: error instanceof Error ? error.message : '网站预览校验失败',
+        });
       }
-
-      let fileCount = 0;
-      let size = 0;
-      const visit = async (directory: string, depth: number): Promise<void> => {
-        if (depth > MAX_OUTPUT_TREE_DEPTH) {
-          throw new Error(
-            `网站预览 ${candidate.name} 目录层级不能超过 ${MAX_OUTPUT_TREE_DEPTH} 层`,
-          );
-        }
-
-        const entries = await readdir(directory, { withFileTypes: true });
-        for (const entry of entries) {
-          const absolutePath = join(directory, entry.name);
-          if (entry.isSymbolicLink()) {
-            throw new Error(`网站预览不能包含符号链接：${entry.name}`);
-          }
-          if (entry.isDirectory()) {
-            await visit(absolutePath, depth + 1);
-            continue;
-          }
-          if (!entry.isFile()) continue;
-
-          fileCount += 1;
-          if (fileCount > MAX_PREVIEW_FILES) {
-            throw new Error(
-              `网站预览 ${candidate.name} 不能超过 ${MAX_PREVIEW_FILES} 个文件`,
-            );
-          }
-          size += (await lstat(absolutePath)).size;
-          if (size > MAX_PREVIEW_BYTES) {
-            throw new Error(
-              `网站预览 ${candidate.name} 总大小不能超过 100 MB`,
-            );
-          }
-        }
-      };
-
-      await visit(previewRoot, 0);
-      previews.push({
-        absolutePath: previewRoot,
-        name: candidate.name,
-        fileCount,
-        size,
-      });
     }
 
-    return previews.sort((left, right) => left.name.localeCompare(right.name));
+    return {
+      previews: previews.sort((left, right) =>
+        left.name.localeCompare(right.name),
+      ),
+      skipped,
+    };
+  }
+
+  /** 按约定顺序找到真正含普通 index.html 的站点根目录。 */
+  private async resolvePreviewSiteRoot(
+    directory: string,
+  ): Promise<string | undefined> {
+    for (const entry of PREVIEW_ENTRY_DIRECTORIES) {
+      const siteRoot = entry ? join(directory, entry) : directory;
+      const indexInfo = await lstat(join(siteRoot, 'index.html')).catch(
+        () => undefined,
+      );
+      if (indexInfo?.isFile()) return siteRoot;
+    }
+
+    return undefined;
+  }
+
+  /** 遍历单个站点并执行配额校验；任何不合格都抛出可读原因。 */
+  private async measurePreviewTree(
+    previewRoot: string,
+    name: string,
+  ): Promise<{ fileCount: number; size: number }> {
+    let fileCount = 0;
+    let size = 0;
+    const visit = async (directory: string, depth: number): Promise<void> => {
+      if (depth > MAX_OUTPUT_TREE_DEPTH) {
+        throw new Error(
+          `网站预览 ${name} 目录层级不能超过 ${MAX_OUTPUT_TREE_DEPTH} 层`,
+        );
+      }
+
+      const entries = await readdir(directory, { withFileTypes: true });
+      for (const entry of entries) {
+        const absolutePath = join(directory, entry.name);
+        if (entry.isSymbolicLink()) {
+          throw new Error(`网站预览 ${name} 不能包含符号链接：${entry.name}`);
+        }
+        if (entry.isDirectory()) {
+          await visit(absolutePath, depth + 1);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+
+        fileCount += 1;
+        if (fileCount > MAX_PREVIEW_FILES) {
+          throw new Error(
+            `网站预览 ${name} 不能超过 ${MAX_PREVIEW_FILES} 个文件`,
+          );
+        }
+        size += (await lstat(absolutePath)).size;
+        if (size > MAX_PREVIEW_BYTES) {
+          throw new Error(`网站预览 ${name} 总大小不能超过 100 MB`);
+        }
+      }
+    };
+
+    await visit(previewRoot, 0);
+    return { fileCount, size };
   }
 
   /**

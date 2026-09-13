@@ -14,7 +14,10 @@ Office 文档生成等脚本。模型输出不能直接在 Keen Agent 仓库或 
 - 所有 Shell、Node、Python 和 Skill 脚本只在 Docker 容器中运行。
 - 容器默认断网、根文件系统只读，不挂载 Docker Socket，也不继承宿主环境变量。
 - 只有明确写入 `outputs/` 的文件可以发布为下载链接。
-- 只有明确写入 `previews/<name>/` 且包含 `index.html` 的目录可以发布为页面预览。
+- 只有明确写入 `previews/<name>/` 且能解析出 `index.html` 的目录可以发布为页面预览；
+  站点根可以是一级目录本身，也可以是其中的 `dist/`、`build/`、`out/`。
+- 单个目录不合格（没有 index.html、含符号链接、超出配额）只会被跳过并在回答里说明原因，
+  不会让同一轮其他站点的发布失败。
 - 发布阶段再次检查普通文件、符号链接、路径、文件数、目录深度和总大小。
 
 沙箱保护的是 DeepAgent 的本地文件和命令能力。模型 Provider、OCR 请求和 HTTP/stdio MCP
@@ -406,7 +409,9 @@ pnpm dev
 | --- | --- | --- |
 | `DOCKER_SANDBOX_IMAGE` | `keen-agent-sandbox:latest` | 沙箱镜像名。 |
 | `DOCKER_SANDBOX_COMMAND_TIMEOUT_MS` | `180000` | 单次命令超时。 |
-| `AI_AGENT_TIMEOUT_MS` | `300000` | 整轮模型与工具调用超时。 |
+| `AI_AGENT_MODEL_TIMEOUT_MS` | `900000` | 模型生成阶段的静默上限。 |
+| `AI_AGENT_TOOL_TIMEOUT_MS` | `1800000` | 工具执行阶段的静默上限，必须大于工具自身超时。 |
+| `AI_AGENT_IDLE_TIMEOUT_MS` | `180000` | 步骤间空闲上限；等待用户弹窗回答期间暂停计时。 |
 | `ARTIFACTS_PATH` | `.keen-agent/artifacts` | Web 下载产物持久目录。 |
 | `ARTIFACT_PUBLIC_BASE_URL` | `/api/ai-server/artifacts` | 下载 API 前缀。 |
 | `PREVIEWS_PATH` | `.keen-agent/previews` | Web 静态预览持久目录。 |
@@ -435,8 +440,10 @@ pnpm dev
 
 ### 页面没有出现在回答中
 
-确认目录结构是 `/mnt/user-data/previews/<name>/index.html`。直接把 `index.html` 放在
-`previews/` 根目录不会被识别，因为一级子目录代表一个独立站点。
+确认目录结构是 `/mnt/user-data/previews/<name>/index.html`；也可以直接把构建输出目录整体
+复制进来（`previews/<name>/dist/index.html`）。直接把 `index.html` 放在 `previews/` 根目录
+不会被识别，因为一级子目录代表一个独立站点。无法解析出 `index.html` 的目录会出现在回答的
+「未发布的网页预览」提示里，并带有具体原因，不会影响同轮其他站点。
 
 ### MCP 能否绕过 Docker 沙箱访问宿主
 

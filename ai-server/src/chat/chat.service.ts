@@ -8,14 +8,17 @@ import { randomUUID } from 'node:crypto';
 import {
   createAgentRuntime,
   createChatModel,
-  createLivenessCallback,
   isWebGenerationRequest,
   resumeAskUserCommand,
   type AgentRuntime,
   type AskUserAnswer,
   type AskUserRequest,
-  type LivenessPhase,
 } from '@keen-agent/ai-agent/agent';
+import {
+  createLivenessWatchdog,
+  type LivenessPhase,
+  type LivenessWatchdog,
+} from '@keen-agent/ai-agent/liveness';
 import type { ModelConfig } from '@keen-agent/ai-agent/model-config';
 import { MCP_TOOL_ERROR_PREFIX } from '@keen-agent/ai-agent/plugins';
 import { z } from 'zod';
@@ -44,33 +47,44 @@ const DEFAULT_VISION_MODEL_ID = 'qwen3.5-ocr';
 const IMAGE_DATA_URL_PATTERN =
   /^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
 /**
- * 两级超时策略：
- * - MODEL_GENERATING：模型正在生成（含 thinking / tool-call args）。
- *   部分供应商不流式输出 tool-call 参数，stream 不会产生 event，
- *   但 LangChain callback 仍会触发 handleLLMNewToken。
- *   超时设得宽裕，避免误杀大文件生成。
- * - IDLE：模型回合结束后等待下一步（工具执行或下一轮模型调用）。
- *   持续静默超过此阈值视为卡死。
+ * 活跃度看门狗按阶段计时（见 @keen-agent/ai-agent/liveness）：
+ * - 模型生成：供应商可能不流式输出 tool-call 参数，窗口要宽裕。
+ * - 工具执行：长命令、Docker 构建、MCP 调用天然静默数分钟，工具自身已有超时，
+ *   外层只兜底"永远不返回"，窗口必须比所有工具自身超时更宽裕。
+ * - 步骤间空闲：这才是真正的卡死信号，用短超时。
+ * 阈值可用 AI_AGENT_MODEL_TIMEOUT_MS / AI_AGENT_TOOL_TIMEOUT_MS /
+ * AI_AGENT_IDLE_TIMEOUT_MS 覆盖。
  */
-const DEFAULT_MODEL_GENERATING_TIMEOUT_MS = 15 * 60_000;
-const DEFAULT_IDLE_TIMEOUT_MS = 3 * 60_000;
 
-const getModelGeneratingTimeoutMs = (): number => {
-  const value = Number(
-    process.env.AI_AGENT_MODEL_TIMEOUT_MS || DEFAULT_MODEL_GENERATING_TIMEOUT_MS,
-  );
-  return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
-    ? value
-    : DEFAULT_MODEL_GENERATING_TIMEOUT_MS;
-};
+/** 超时提示按阶段区分原因和处置方式，避免把正常的长工具执行说成"卡死"。 */
+const createLivenessTimeoutNotice = (
+  phase: LivenessPhase,
+  timeoutMs: number,
+): string => {
+  const minutes = Math.max(1, Math.round(timeoutMs / 60_000));
 
-const getIdleTimeoutMs = (): number => {
-  const value = Number(
-    process.env.AI_AGENT_IDLE_TIMEOUT_MS || DEFAULT_IDLE_TIMEOUT_MS,
+  if (phase === 'model-generating') {
+    return (
+      '\n\n> ⚠️ 模型生成超时：连续 ' +
+      `${minutes} 分钟没有收到模型输出，` +
+      '可能是模型端异常或网络中断。请重新尝试这次对话。'
+    );
+  }
+
+  if (phase === 'tool-running') {
+    return (
+      '\n\n> ⚠️ 工具执行超时：连续 ' +
+      `${minutes} 分钟没有收到工具返回结果，已中止本轮对话。` +
+      '沙箱命令、插件调用都有各自的超时，超过说明该调用已经失去响应；' +
+      '请参考上方工具记录确认卡在哪一步，再重试或把任务拆小。'
+    );
+  }
+
+  return (
+    '\n\n> ⚠️ 长时间无响应：Agent 连续 ' +
+    `${minutes} 分钟没有任何进展，` +
+    '可能是网络断开或内部步骤卡死。请重新尝试这次对话，或改用更简单的任务分段完成。'
   );
-  return Number.isInteger(value) && value >= 10_000 && value <= 60 * 60_000
-    ? value
-    : DEFAULT_IDLE_TIMEOUT_MS;
 };
 
 /** 服务端不信任浏览器校验，重新核对 MIME、base64 和实际解码尺寸。 */
@@ -680,91 +694,41 @@ export class ChatService {
   /**
    * 执行聊天编排；资源生命周期由外层 stream 统一管理。
    *
-   * 两级超时策略（生产级方案）：
+   * 取消来源：
    * - 客户端关闭 / 服务进程退出：clientSignal 立即 abort。
-   * - 模型正在生成（model-generating 阶段）：宽裕超时（默认 15 分钟），
-   *   因为部分供应商不流式输出 tool-call 参数，stream 无 event 但 callback
-   *   会触发 handleLLMNewToken，每个 token 重置计时器。
-   * - 模型回合结束后等待下一步（idle 阶段）：短超时（默认 3 分钟），
-   *   持续静默超过此阈值视为卡死。
-   * - stream event 也会重置计时器，双保险。
+   * - 真正失去进展：活跃度看门狗按阶段超时后 abort（见 createLivenessWatchdog）。
+   *   等待用户弹窗回答属于人的节奏，期间会暂停看门狗，不会被判成卡死。
    */
   private async *runStream(
     prepared: PreparedChat,
     clientSignal: AbortSignal,
   ): AsyncGenerator<ChatStreamChunk> {
-    const agentAbort = new AbortController();
-    let timer: NodeJS.Timeout | undefined;
-    let currentPhase: LivenessPhase = 'idle';
-
-    const armTimer = (phase: LivenessPhase) => {
-      currentPhase = phase;
-      if (timer) clearTimeout(timer);
-      const ms =
-        phase === 'model-generating'
-          ? getModelGeneratingTimeoutMs()
-          : getIdleTimeoutMs();
-      timer = setTimeout(() => agentAbort.abort(), ms);
-    };
-
-    // 初始视为 idle——模型还没开始生成。
-    armTimer('idle');
-
-    // LangChain callback：在 token 级别上报活跃信号，弥补 stream event
-    // 稀疏（如供应商不流式 tool-call 参数）时无法感知模型进度的问题。
-    const livenessCallback = createLivenessCallback((phase) => armTimer(phase));
-
-    const signal = AbortSignal.any([clientSignal, agentAbort.signal]);
-
-    let timedOut = false;
-    agentAbort.signal.addEventListener(
-      'abort',
-      () => {
-        if (!clientSignal.aborted) timedOut = true;
-      },
-      { once: true },
-    );
+    const watchdog = createLivenessWatchdog();
+    const signal = AbortSignal.any([clientSignal, watchdog.signal]);
 
     try {
-      yield* this.runStreamBody(
-        prepared,
-        signal,
-        () => armTimer(currentPhase),
-        clientSignal,
-        livenessCallback,
-      );
+      yield* this.runStreamBody(prepared, signal, watchdog, clientSignal);
     } catch (error) {
-      if (timedOut) {
-        const isModel =
-          (currentPhase as LivenessPhase) === 'model-generating';
-        const minutes = Math.round(
-          (isModel
-            ? getModelGeneratingTimeoutMs()
-            : getIdleTimeoutMs()) / 60_000,
-        );
+      if (watchdog.timedOut() && !clientSignal.aborted) {
         yield {
-          content: isModel
-            ? '\n\n> ⚠️ 模型生成超时：连续 ' +
-              `${minutes} 分钟没有收到模型输出，` +
-              '可能是模型端异常或网络中断。请重新尝试这次对话。'
-            : '\n\n> ⚠️ 长时间无响应：Agent 连续 ' +
-              `${minutes} 分钟没有任何输出，` +
-              '可能是网络断开或工具调用卡死。请重新尝试这次对话，或改用更简单的任务分段完成。',
+          content: createLivenessTimeoutNotice(
+            watchdog.phase(),
+            watchdog.timeoutMs(),
+          ),
         };
         return;
       }
       throw error;
     } finally {
-      if (timer) clearTimeout(timer);
+      watchdog.dispose();
     }
   }
 
   private async *runStreamBody(
     prepared: PreparedChat,
     signal: AbortSignal,
-    resetIdleTimer: () => void,
+    watchdog: LivenessWatchdog,
     clientSignal: AbortSignal,
-    livenessCallback: ReturnType<typeof createLivenessCallback>,
   ): AsyncGenerator<ChatStreamChunk> {
     let reasoningContent = '';
     signal.throwIfAborted();
@@ -796,10 +760,12 @@ export class ChatService {
         throw new Error('找不到本轮需要解析的图片');
       }
 
+      // 逐张 OCR 属于长耗时外部调用，按工具阶段计时，避免被空闲阈值误杀。
+      watchdog.enter('tool-running');
       const imageAnalysis = await analyzeImages(
         prepared.visionModel,
         currentUserMessage.images,
-        clientSignal,
+        signal,
       );
       prepared.conversation = await this.conversationsService.setImageAnalysis(
         prepared.conversation.id,
@@ -865,10 +831,12 @@ export class ChatService {
         reasoningContent += status;
         yield { reasoningContent: status };
 
+        // 逐张 OCR 属于长耗时外部调用，按工具阶段计时。
+        watchdog.enter('tool-running');
         const imageAnalysis = await analyzeImages(
           prepared.model,
           currentUserMessage.images,
-          clientSignal,
+          signal,
         );
         prepared.conversation =
           await this.conversationsService.setImageAnalysis(
@@ -881,8 +849,10 @@ export class ChatService {
         yield { reasoningContent: completedStatus };
         chunk = { content: imageAnalysis };
       } else {
+        // 直接调用底层模型没有 LangChain callback，显式声明当前处于模型生成阶段。
+        watchdog.enter('model-generating');
         const response = await createChatModel(prepared.model).invoke(messages, {
-          signal: clientSignal,
+          signal,
         });
         chunk = extractContent(response.content);
 
@@ -950,14 +920,14 @@ export class ChatService {
         configurable: { thread_id: threadId },
         streamMode: ['messages', 'tools', 'values'],
         signal,
-        callbacks: [livenessCallback],
+        callbacks: [watchdog.callback],
       });
       let interruptRequest: AskUserRequest | null = null;
       const seenTodos = new Set<string>();
 
       for await (const event of stream) {
         signal.throwIfAborted();
-        resetIdleTimer();
+        watchdog.reset();
         if (!Array.isArray(event)) continue;
 
         if (event[0] === 'values') {
@@ -1122,6 +1092,9 @@ export class ChatService {
       reasoningContent += askMarker;
       yield { reasoningContent: askMarker };
 
+      // 等待用户回答由人决定时长，可能远超任何超时阈值，期间必须停表。
+      watchdog.pause();
+
       const answer = await new Promise<AskUserAnswer>((resolve, reject) => {
         const onAbort = () => {
           this.pendingResumes.delete(askRunId);
@@ -1143,11 +1116,16 @@ export class ChatService {
           },
         });
       });
+      // 恢复后先按步骤间空闲计时：紧接着的模型调用会由 callback 切到生成阶段。
+      watchdog.resume('idle');
       streamInput = resumeAskUserCommand(answer) as unknown as Record<
         string,
         unknown
       >;
     }
+
+    // Agent 循环已经结束，后续产物收集不再属于"Agent 是否卡死"的判定范围。
+    watchdog.pause();
 
     if (!reasoningFinished) {
       const durationMarker = finishReasoning();
@@ -1195,20 +1173,35 @@ export class ChatService {
     }
 
     try {
-      const previews = await prepared.agentRuntime.collectPreviews();
-      if (previews.length > 0) {
+      const { published, skipped } =
+        await prepared.agentRuntime.collectPreviews();
+      if (published.length > 0) {
         const previewSection = [
           '',
           '',
           '### 生成的页面',
           '',
-          ...previews.map(
+          ...published.map(
             (preview) =>
               `[在线预览：${preview.name.replace(/[\[\]]/g, '\\$&')}](${preview.url})`,
           ),
         ].join('\n\n');
         content += previewSection;
         yield { content: previewSection };
+      }
+
+      // 无法发布的预览目录只提示原因，不再让整轮回答出现"发布失败"的报错。
+      if (skipped.length > 0) {
+        const skippedSection = [
+          '',
+          '',
+          '> 未发布的网页预览：',
+          ...skipped.map(
+            (item) => `> - ${item.name}：${item.reason.replace(/\r?\n/g, ' ')}`,
+          ),
+        ].join('\n');
+        content += skippedSection;
+        yield { content: skippedSection };
       }
     } catch (error) {
       const message =

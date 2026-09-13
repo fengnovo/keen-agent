@@ -218,7 +218,7 @@ docker build -t keen-agent-sandbox:latest ai-agent/.sandbox
 - 仅 `/mnt/user-data` 可写；工作文件放在 `workspace/`，最终产物放在 `outputs/`。
 - 用户网站源码由模型通过沙箱文件工具逐个创建和修改；镜像只预装依赖，不包含预制网站内容。
 - React/Vite 项目可以调用 `prepare-web-project <目录>` 连接镜像内的离线依赖；该命令只准备依赖与通用 `package.json`，不会生成页面源码。
-- 静态站点构建后把 `dist` 内容复制到 `previews/<名称>/`；目录必须包含 `index.html`，Web 端会发布为受限 iframe 预览。
+- 静态站点构建后把构建产物放进 `previews/<名称>/`：既可以直接复制 `dist` 内容，也可以整个复制 `dist` 目录（系统会识别 `dist/`、`build/`、`out/`）；Web 端会发布为受限 iframe 预览。
 - 本轮结束后临时目录删除；Web 服务会先把 outputs 和 previews 中通过校验的内容复制到持久发布目录。
 - 单个容器文件上限 100 MB；每轮最多发布 20 个产物、总计 250 MB，符号链接不会发布。
 
@@ -283,10 +283,13 @@ Web 图片编排还支持：
 
 ```bash
 VISION_MODEL_ID=qwen3.5-ocr
-# 可选：覆盖默认沙箱镜像、单次命令超时和整轮 Agent 超时
+# 可选：覆盖默认沙箱镜像、单次命令超时和分阶段活跃度超时
 DOCKER_SANDBOX_IMAGE=keen-agent-sandbox:latest
 DOCKER_SANDBOX_COMMAND_TIMEOUT_MS=180000
-AI_AGENT_TIMEOUT_MS=300000
+# 模型生成 / 工具执行 / 步骤间空闲三个阶段的静默上限
+AI_AGENT_MODEL_TIMEOUT_MS=900000
+AI_AGENT_TOOL_TIMEOUT_MS=1800000
+AI_AGENT_IDLE_TIMEOUT_MS=180000
 ```
 
 未配置时默认使用 `qwen3.5-ocr`。

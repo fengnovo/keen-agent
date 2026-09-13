@@ -16,7 +16,9 @@ Docker 沙箱的完整请求流程、信任边界、产物/预览 API 和新增�
 - `VISION_MODEL_ID`：内部图片解析模型的模型配置 ID，默认 `qwen3.5-ocr`
 - `DOCKER_SANDBOX_IMAGE`：Docker 隔离执行镜像，默认 `keen-agent-sandbox:latest`
 - `DOCKER_SANDBOX_COMMAND_TIMEOUT_MS`：单条沙箱命令超时，默认 `180000`
-- `AI_AGENT_TIMEOUT_MS`：整轮模型和工具调用超时，默认 `300000`
+- `AI_AGENT_MODEL_TIMEOUT_MS`：模型生成阶段的静默上限，默认 `900000`（15 分钟）
+- `AI_AGENT_TOOL_TIMEOUT_MS`：工具执行阶段的静默上限，默认 `1800000`（30 分钟），需大于沙箱/MCP 自身的工具超时
+- `AI_AGENT_IDLE_TIMEOUT_MS`：步骤间空闲上限，默认 `180000`（3 分钟）；等待用户弹窗回答期间暂停计时
 - `ARTIFACTS_PATH`：已发布产物目录，默认 `.keen-agent/artifacts`
 - `ARTIFACT_PUBLIC_BASE_URL`：返回给模型的下载 API 前缀，默认 `/api/ai-server/artifacts`
 - `PREVIEWS_PATH`：已发布静态站点目录，默认 `.keen-agent/previews`
@@ -85,7 +87,8 @@ Backend 代替内存 StateBackend。最终文件必须写到 `/mnt/user-data/out
 只根据服务端元数据解析实际文件，因此不能利用 `..` 或符号链接读取其他文件。
 单个下载产物最大 100 MB，每轮最多发布 20 个文件、总计 250 MB。
 
-预览 API 只发布包含 `index.html` 的普通目录，拒绝符号链接和路径穿越。每轮最多 5 个
+预览 API 只发布包含 `index.html` 的普通目录（站点根可以是一级目录本身或其 `dist/`、
+`build/`、`out/` 子目录），拒绝符号链接和路径穿越。每轮最多 5 个
 站点，每站最多 2,000 个文件、100 MB、20 层目录。响应使用 CSP sandbox、禁止外部网络
 连接，并关闭摄像头、麦克风、定位等浏览器权限；静态资源只为 opaque-origin iframe
 开放匿名 CORS，不授予页面访问父窗口或同源存储的能力。
