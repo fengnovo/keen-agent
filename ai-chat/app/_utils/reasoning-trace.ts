@@ -69,6 +69,14 @@ export interface ReconciledReasoningTrace {
 export const isReasoningStreamDone = (status?: string): boolean =>
   status !== 'loading' && status !== 'updating';
 
+/**
+ * ask_user 弹窗只在当前流仍处于进行中时才可交互。
+ * 服务端会把 ask_user 标记持久化进思考内容，刷新后回放的历史消息状态为 success，
+ * 此时等待中的流早已不存在，必须禁止再次弹出，否则 resume 会报“找不到等待回答的弹窗”。
+ */
+export const isAskUserInteractive = (status?: string): boolean =>
+  !isReasoningStreamDone(status);
+
 /** A disconnected/aborted stream cannot leave tools visually running forever. */
 export const settleReasoningSteps = (steps: ReasoningTraceStep[], isDone: boolean): ReasoningTraceStep[] =>
   steps.map(step => isDone && step.kind === 'tool' && step.status === 'running'

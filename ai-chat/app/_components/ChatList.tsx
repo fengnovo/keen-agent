@@ -22,6 +22,8 @@ interface ChatListProps {
   className: string;
   /** 消息列表 ref */
   listRef: React.RefObject<BubbleListRef | null>;
+  /** 用户取消 ask_user 弹窗时中止当前流 */
+  onAskUserCancel?: () => void;
 }
 
 /**
@@ -32,6 +34,7 @@ export const ChatList: React.FC<ChatListProps> = ({
   messages,
   className,
   listRef,
+  onAskUserCancel,
 }) => {
   const { styles } = useStyle();
 
@@ -60,7 +63,7 @@ export const ChatList: React.FC<ChatListProps> = ({
             loading: i.status === 'loading' && !i.message.content,
             extraInfo: i.extraInfo,
           }))}
-          role={getRole(className)}
+          role={getRole(className, onAskUserCancel)}
         />
       ) : null}
     </div>

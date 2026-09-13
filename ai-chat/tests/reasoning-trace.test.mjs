@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   extractReasoningTraceMarkers,
+  isAskUserInteractive,
   isReasoningStreamDone,
   parseReasoningTrace,
   reconcileReasoningTrace,
@@ -103,6 +104,15 @@ test('keeps reasoning in loading state until the whole response settles', () => 
   assert.equal(isReasoningStreamDone('success'), true);
   assert.equal(isReasoningStreamDone('error'), true);
   assert.equal(isReasoningStreamDone('abort'), true);
+});
+
+test('only allows ask_user interaction while the stream is live', () => {
+  assert.equal(isAskUserInteractive('loading'), true);
+  assert.equal(isAskUserInteractive('updating'), true);
+  assert.equal(isAskUserInteractive('success'), false);
+  assert.equal(isAskUserInteractive('error'), false);
+  assert.equal(isAskUserInteractive('abort'), false);
+  assert.equal(isAskUserInteractive(undefined), false);
 });
 
 test('settled streams never leave incomplete tools spinning', async () => {

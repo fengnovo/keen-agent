@@ -163,9 +163,13 @@ export const historyMessageFactory = async ({
  * 获取消息角色配置
  * 定义用户和助手消息的显示方式
  * @param className Markdown 主题类名
+ * @param onAskUserCancel 用户取消 ask_user 弹窗时中止当前流
  * @returns 角色配置对象
  */
-export const getRole = (className: string): BubbleListProps['role'] => ({
+export const getRole = (
+  className: string,
+  onAskUserCancel?: () => void,
+): BubbleListProps['role'] => ({
   /** 助手消息配置 */
   assistant: {
     placement: 'start',
@@ -178,6 +182,7 @@ export const getRole = (className: string): BubbleListProps['role'] => ({
           content={content}
           className={className}
           status={status}
+          onAskUserCancel={onAskUserCancel}
         />
       );
     },

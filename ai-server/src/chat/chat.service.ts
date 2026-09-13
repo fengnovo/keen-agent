@@ -1113,14 +1113,18 @@ export class ChatService {
 
       if (!interruptRequest) break;
 
+      // 每次弹窗使用独立 runId：同一流内可能出现多次 ask_user，
+      // 复用 threadId 会让前端 key 不变而无法重新弹出，也会让 resume 复用到旧条目。
+      const askRunId = randomUUID();
+
       // 有 ask_user 中断：把弹窗请求发给前端并等待 resume。
-      const askMarker = createAskUserMarker(threadId, interruptRequest);
+      const askMarker = createAskUserMarker(askRunId, interruptRequest);
       reasoningContent += askMarker;
       yield { reasoningContent: askMarker };
 
       const answer = await new Promise<AskUserAnswer>((resolve, reject) => {
         const onAbort = () => {
-          this.pendingResumes.delete(threadId);
+          this.pendingResumes.delete(askRunId);
           reject(new Error('客户端已断开连接，弹窗等待被取消'));
         };
         if (signal.aborted) {
@@ -1128,7 +1132,7 @@ export class ChatService {
           return;
         }
         signal.addEventListener('abort', onAbort, { once: true });
-        this.pendingResumes.set(threadId, {
+        this.pendingResumes.set(askRunId, {
           resolve: (value) => {
             signal.removeEventListener('abort', onAbort);
             resolve(value);

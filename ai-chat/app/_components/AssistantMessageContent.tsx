@@ -4,6 +4,7 @@ import React from 'react';
 
 import {
   extractReasoningTraceMarkers,
+  isAskUserInteractive,
   isReasoningStreamDone,
   parseReasoningTrace,
   reconcileReasoningTrace,
@@ -19,6 +20,8 @@ interface AssistantMessageContentProps {
   content: string;
   className: string;
   status?: string;
+  /** 用户取消 ask_user 弹窗时中止当前流，避免服务端一直等待。 */
+  onAskUserCancel?: () => void;
 }
 
 interface AssistantContentParts {
@@ -75,7 +78,7 @@ const splitAssistantContent = (
 /** 将思考时间线和正式回答拆成两个视觉区域，避免共享同一个 Markdown 灰色块。 */
 export const AssistantMessageContent: React.FC<
   AssistantMessageContentProps
-> = ({ content, className, status }) => {
+> = ({ content, className, status, onAskUserCancel }) => {
   const parts = React.useMemo(
     () => splitAssistantContent(content, status),
     [content, status],
@@ -95,6 +98,9 @@ export const AssistantMessageContent: React.FC<
       askUser: latestAsk,
     };
   }, [parts.reasoning]);
+
+  // 历史回放（status=success）里的 ask_user 已失效，仅在实时流中允许交互。
+  const interactiveAskUser = isAskUserInteractive(status) ? askUser : undefined;
 
   return (
     <div className='assistant-message-content'>
@@ -120,8 +126,13 @@ export const AssistantMessageContent: React.FC<
         </div>
       ) : null}
 
-      {askUser ? (
-        <AskUserModal runId={askUser.runId} request={askUser.request} />
+      {interactiveAskUser ? (
+        <AskUserModal
+          key={interactiveAskUser.runId}
+          runId={interactiveAskUser.runId}
+          request={interactiveAskUser.request}
+          onCancel={onAskUserCancel}
+        />
       ) : null}
     </div>
   );

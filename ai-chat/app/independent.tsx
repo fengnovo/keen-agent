@@ -454,6 +454,7 @@ const Independent: React.FC = () => {
               messages={messages}
               className={className}
               listRef={listRef}
+              onAskUserCancel={abort}
             />
             <ChatSender
               key={activeConversationKey}
