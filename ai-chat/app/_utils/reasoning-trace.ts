@@ -14,7 +14,39 @@ export interface ReasoningToolStep {
   outputSummary?: string;
 }
 
-export type ReasoningTraceStep = ReasoningTextStep | ReasoningToolStep;
+/** 复杂任务的 todo 状态列表快照。 */
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+export interface ReasoningTodoStep {
+  kind: 'todo';
+  key: string;
+  todos: TodoItem[];
+}
+
+/** AI 主动发起的 ask_user 弹窗选择请求。 */
+export interface AskUserRequest {
+  kind: 'ask_user';
+  question: string;
+  options: Array<{ label: string; description?: string }>;
+  multiple: boolean;
+  allowCustom: boolean;
+}
+
+export interface ReasoningAskUserStep {
+  kind: 'ask_user';
+  key: string;
+  runId: string;
+  request: AskUserRequest;
+}
+
+export type ReasoningTraceStep =
+  | ReasoningTextStep
+  | ReasoningToolStep
+  | ReasoningTodoStep
+  | ReasoningAskUserStep;
 
 export interface ParsedReasoningTrace {
   steps: ReasoningTraceStep[];
@@ -43,10 +75,12 @@ export const settleReasoningSteps = (steps: ReasoningTraceStep[], isDone: boolea
     ? { ...step, status: 'stopped' } : step);
 
 const TRACE_MARKER_PATTERN =
-  /\[keen-tool-event:([^\]\r\n]+)\]|\[keen-reasoning-duration:(\d+)\]/g;
+  /\[keen-tool-event:([^\]\r\n]+)\]|\[keen-reasoning-duration:(\d+)\]|\[keen-todo:([^\]\r\n]+)\]|\[keen-ask-user:([^\]\r\n]+)\]/g;
 const TRACE_MARKER_PREFIXES = [
   '[keen-tool-event:',
   '[keen-reasoning-duration:',
+  '[keen-todo:',
+  '[keen-ask-user:',
 ] as const;
 
 /** 流片段可能停在内部标记中间；在闭合方括号到达前不把半截协议显示给用户。 */
@@ -152,6 +186,62 @@ const parseToolStep = (payload: string): ReasoningToolStep | undefined => {
   }
 };
 
+const parseTodoStep = (payload: string): ReasoningTodoStep | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(payload));
+    if (!Array.isArray(parsed)) return undefined;
+
+    const todos = parsed.filter(
+      (item): item is TodoItem =>
+        !!item &&
+        typeof item === 'object' &&
+        typeof (item as TodoItem).content === 'string' &&
+        ['pending', 'in_progress', 'completed'].includes(
+          (item as TodoItem).status,
+        ),
+    );
+
+    return { kind: 'todo', key: 'todo:latest', todos };
+  } catch {
+    return undefined;
+  }
+};
+
+const parseAskUserStep = (
+  payload: string,
+): ReasoningAskUserStep | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(payload));
+    if (!parsed || typeof parsed !== 'object') return undefined;
+
+    const event = parsed as Record<string, unknown>;
+    if (typeof event.runId !== 'string' || !event.runId) return undefined;
+    const request = event.request as Record<string, unknown> | undefined;
+    if (
+      !request ||
+      typeof request.question !== 'string' ||
+      !Array.isArray(request.options)
+    ) {
+      return undefined;
+    }
+
+    return {
+      kind: 'ask_user',
+      key: `ask_user:${event.runId}`,
+      runId: event.runId,
+      request: {
+        kind: 'ask_user',
+        question: request.question,
+        options: request.options as AskUserRequest['options'],
+        multiple: request.multiple === true,
+        allowCustom: request.allowCustom === true,
+      },
+    };
+  } catch {
+    return undefined;
+  }
+};
+
 /** 把服务端插入的工具生命周期标记还原成按发生顺序排列的思考步骤。 */
 export const parseReasoningTrace = (content: string): ParsedReasoningTrace => {
   const steps: ReasoningTraceStep[] = [];
@@ -159,6 +249,7 @@ export const parseReasoningTrace = (content: string): ParsedReasoningTrace => {
   let durationMs: number | undefined;
   let cursor = 0;
   let reasoningSequence = 0;
+  let todoSequence = 0;
 
   const appendReasoning = (value: string) => {
     const normalized = value.trim();
@@ -200,6 +291,15 @@ export const parseReasoningTrace = (content: string): ParsedReasoningTrace => {
       if (Number.isFinite(parsedDuration) && parsedDuration > 0) {
         durationMs = parsedDuration;
       }
+    } else if (match[3]) {
+      const todoStep = parseTodoStep(match[3]);
+      if (todoStep) {
+        todoSequence += 1;
+        steps.push({ ...todoStep, key: `todo:${todoSequence}` });
+      }
+    } else if (match[4]) {
+      const askStep = parseAskUserStep(match[4]);
+      if (askStep) steps.push(askStep);
     }
 
     cursor = (match.index ?? 0) + match[0].length;

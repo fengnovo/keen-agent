@@ -43,5 +43,22 @@ if [ ! -e "$target/package.json" ]; then
     '}' > "$target/package.json"
 fi
 
+# 不显式创建 vite.config 时，Vite 默认用 classic JSX runtime，产出的
+# React.createElement(...) 依赖全局 React；模型通常不写 import React，
+# 导致浏览器里 ReferenceError: React is not defined，页面只剩白屏。
+# 这里补一个启用 react 插件的配置（automatic 运行时），使 JSX 自动
+# 内联 jsx/jsxs 而不再需要全局 React。模型若自己写了配置则不改动。
+if [ ! -e "$target/vite.config.js" ] && [ ! -e "$target/vite.config.ts" ]; then
+  cat > "$target/vite.config.js" <<'EOF'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  esbuild: { jsx: 'automatic' },
+});
+EOF
+fi
+
 echo "已为项目连接离线 Web 运行时：$target"
 echo "请由 Agent 自行创建 index.html、src 和配置文件，然后运行 npm run build。"

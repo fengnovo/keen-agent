@@ -76,36 +76,38 @@ export const ThinkComponent: React.FC<ThinkComponentProps> = React.memo(
     const lastStepIndex = trace.steps.length - 1;
     const items = React.useMemo<ThoughtChainItemType[]>(
       () =>
-        settleReasoningSteps(trace.steps, isDone).map((step, index) => {
-          if (step.kind === 'reasoning') {
+        settleReasoningSteps(trace.steps, isDone)
+          .filter((step) => step.kind === 'reasoning' || step.kind === 'tool')
+          .map((step, index) => {
+            if (step.kind === 'reasoning') {
+              return {
+                key: step.key,
+                icon: <span className='reasoning-step-dot' />,
+                title: (
+                  <MarkdownContent
+                    content={step.content}
+                    className={className}
+                    isStreaming={!isDone && index === lastStepIndex}
+                    variant='reasoning'
+                  />
+                ),
+              };
+            }
+
             return {
               key: step.key,
-              icon: <span className='reasoning-step-dot' />,
-              title: (
-                <MarkdownContent
-                  content={step.content}
-                  className={className}
-                  isStreaming={!isDone && index === lastStepIndex}
-                  variant='reasoning'
-                />
-              ),
+              icon: getToolIcon(step),
+              title: getToolTitle(step),
+              description: step.inputSummary,
+              status:
+                step.status === 'running'
+                  ? 'loading'
+                  : step.status === 'error'
+                    ? 'error'
+                    : undefined,
+              blink: step.status === 'running',
             };
-          }
-
-          return {
-            key: step.key,
-            icon: getToolIcon(step),
-            title: getToolTitle(step),
-            description: step.inputSummary,
-            status:
-              step.status === 'running'
-                ? 'loading'
-                : step.status === 'error'
-                  ? 'error'
-                  : undefined,
-            blink: step.status === 'running',
-          };
-        }),
+          }),
       [className, isDone, lastStepIndex, trace.steps],
     );
     const duration = isDone && trace.durationMs

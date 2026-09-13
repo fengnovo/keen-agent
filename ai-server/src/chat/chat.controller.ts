@@ -1,7 +1,30 @@
-import { Body, Controller, Post, Res } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Post,
+  Res,
+} from '@nestjs/common';
 import type { Response } from 'express';
+import { z } from 'zod';
 
+import type { AskUserAnswer } from '@keen-agent/ai-agent/agent';
 import { ChatService, type ChatStreamChunk } from './chat.service.js';
+
+const resumeSchema = z.object({
+  runId: z.string().min(1),
+  answer: z.object({
+    selections: z
+      .array(
+        z.object({
+          index: z.number().int().min(0),
+          label: z.string().min(1),
+        }),
+      )
+      .min(1),
+    customText: z.string().optional(),
+  }),
+});
 
 /** 把 Agent 文本块包装为前端 Provider 已支持的 OpenAI 兼容事件。 */
 const createSsePayload = (
@@ -29,6 +52,19 @@ const createSsePayload = (
 @Controller('chat')
 export class ChatController {
   constructor(private readonly chatService: ChatService) {}
+
+  /** 前端回填 ask_user 弹窗答案，恢复被中断的流。 */
+  @Post('resume')
+  resume(@Body() body: unknown): { ok: true } {
+    const result = resumeSchema.safeParse(body);
+    if (!result.success) {
+      throw new BadRequestException(
+        result.error.issues.map((issue) => issue.message).join('；'),
+      );
+    }
+    this.chatService.resume(result.data.runId, result.data.answer as AskUserAnswer);
+    return { ok: true };
+  }
 
   /**
    * 流式聊天入口。

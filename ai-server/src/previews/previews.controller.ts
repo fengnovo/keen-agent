@@ -12,20 +12,23 @@ import { readFile } from 'node:fs/promises';
 import { PreviewsService } from './previews.service.js';
 
 // 预览页面是模型生成的不可信前端代码：允许页面自身脚本和样式，但禁止联网、
-// 表单提交、对象嵌入和顶层导航；iframe 也不会获得 allow-same-origin。
+// 表单提交、对象嵌入和顶层导航。
+//
+// 注意：iframe 用 sandbox="allow-scripts allow-modals"（无 allow-same-origin），
+// 因此页面是 opaque origin。opaque origin 下 CSP 的 'self' 不匹配任何资源，
+// 会把 ./assets 等相对资源也拦截掉，最终只剩空白页。所以资源来源用 * 放开，
+// 真正的隔离由 iframe sandbox + 随机 token 承担；网络外连仍通过 connect-src 禁止。
 const PREVIEW_CSP = [
-  "default-src 'self' data: blob:",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
+  "default-src * data: blob:",
+  "script-src * 'unsafe-inline' 'unsafe-eval' blob:",
+  "style-src * 'unsafe-inline'",
+  "img-src * data: blob:",
+  "font-src * data:",
   "connect-src 'none'",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
-  "frame-ancestors 'self'",
   "worker-src 'none'",
-  'sandbox allow-scripts allow-modals',
 ].join('; ');
 
 /**
@@ -81,7 +84,8 @@ export class PreviewsController {
     response.setHeader('Content-Security-Policy', PREVIEW_CSP);
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    // 预览页需要被前端 sandbox iframe 嵌入，不能设 X-Frame-Options 限制，
+    // 否则 opaque origin 会被判定不同源而拒绝渲染。
     response.setHeader(
       'Permissions-Policy',
       'camera=(), microphone=(), geolocation=(), payment=(), usb=()',

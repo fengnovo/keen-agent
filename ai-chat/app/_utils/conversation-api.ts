@@ -124,3 +124,17 @@ export const deleteConversation = (id: string) =>
   request<{ id: string }>(`/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
+
+/** 回填 ask_user 弹窗答案，恢复被中断的 Agent 流。 */
+export const resumeAskUser = async (runId: string, answer: unknown) => {
+  const response = await fetch('/api/ai-server/chat/resume', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runId, answer }),
+  });
+  const payload: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    throw new Error(getErrorMessage(payload, '恢复弹窗请求失败'));
+  }
+  return payload as { ok: true };
+};

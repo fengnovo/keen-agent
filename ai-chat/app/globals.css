@@ -330,3 +330,76 @@ body {
     font-size: 18px;
   }
 }
+
+/* 复杂任务的 todo 状态列表。 */
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.todo-icon {
+  margin-top: 2px;
+  font-size: 13px;
+}
+
+.todo-icon-done {
+  color: #52c41a;
+}
+
+.todo-icon-active {
+  color: #faad14;
+}
+
+.todo-icon-pending {
+  color: #bfbfbf;
+}
+
+.todo-content {
+  word-break: break-word;
+}
+
+.todo-item-completed .todo-content {
+  color: #999;
+  text-decoration: line-through;
+}
+
+.todo-item-in_progress .todo-content {
+  color: #1677ff;
+}
+
+/* ask_user 弹窗选项。 */
+.ask-user-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ask-user-option {
+  display: flex;
+  flex-direction: column;
+}
+
+.ask-user-label {
+  font-weight: 500;
+}
+
+.ask-user-description {
+  display: block;
+  margin-top: 2px;
+  color: #8c8c8c;
+  font-size: 12px;
+}

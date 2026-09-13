@@ -10,7 +10,10 @@ import {
   createChatModel,
   createLivenessCallback,
   isWebGenerationRequest,
+  resumeAskUserCommand,
   type AgentRuntime,
+  type AskUserAnswer,
+  type AskUserRequest,
   type LivenessPhase,
 } from '@keen-agent/ai-agent/agent';
 import type { ModelConfig } from '@keen-agent/ai-agent/model-config';
@@ -311,6 +314,19 @@ const createToolTraceMarker = (payload: ToolTraceEvent): string =>
 const createReasoningDurationMarker = (durationMs: number): string =>
   `\n\n[keen-reasoning-duration:${Math.max(1, Math.round(durationMs))}]\n\n`;
 
+/** todo 列表快照标记，供前端渲染任务状态列表。 */
+interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+const createTodoMarker = (todos: TodoItem[]): string =>
+  `\n\n[keen-todo:${encodeURIComponent(JSON.stringify(todos))}]\n\n`;
+
+/** ask_user 弹窗标记，携带 runId 供前端回填答案。 */
+const createAskUserMarker = (runId: string, request: AskUserRequest): string =>
+  `\n\n[keen-ask-user:${encodeURIComponent(JSON.stringify({ runId, request }))}]\n\n`;
+
 /**
  * 兼容 LangChain 的字符串内容以及 Anthropic 的分块内容。
  * 工具调用块不在这里输出，避免把内部协议对象直接展示给用户。
@@ -497,6 +513,12 @@ const assertVisionModelProtocol = (model: ModelConfig): void => {
 
 @Injectable()
 export class ChatService {
+  /** 等待前端回填答案的 ask_user 中断；key 为流内 runId（thread_id）。 */
+  private readonly pendingResumes = new Map<
+    string,
+    { resolve: (answer: AskUserAnswer) => void; reject: (error: unknown) => void }
+  >();
+
   constructor(
     private readonly modelsService: ModelsService,
     private readonly pluginsService: PluginsService,
@@ -504,6 +526,16 @@ export class ChatService {
     private readonly artifactsService: ArtifactsService,
     private readonly previewsService: PreviewsService,
   ) {}
+
+  /** 前端回填 ask_user 答案，恢复被中断的流。 */
+  resume(runId: string, answer: AskUserAnswer): void {
+    const entry = this.pendingResumes.get(runId);
+    if (!entry) {
+      throw new BadRequestException('找不到等待回答的弹窗，可能已超时或已关闭');
+    }
+    this.pendingResumes.delete(runId);
+    entry.resolve(answer);
+  }
 
   /**
    * 校验请求、解析会话模型、先保存用户消息，再按 ai-agent 的统一配置创建 Agent。
@@ -884,20 +916,7 @@ export class ChatService {
       return;
     }
 
-    const stream = await prepared.agentRuntime.agent.stream(
-      {
-        messages,
-        ...(prepared.agentRuntime.skillFiles
-          ? { files: prepared.agentRuntime.skillFiles }
-          : {}),
-      },
-      {
-        configurable: { thread_id: randomUUID() },
-        streamMode: ['messages', 'tools'],
-        signal,
-        callbacks: [livenessCallback],
-      },
-    );
+    const threadId = randomUUID();
     let content = '';
     let toolSequence = 0;
     const pendingToolCalls = new Map<string, string[]>();
@@ -918,106 +937,212 @@ export class ChatService {
       return calls.shift() ?? `tool-${++toolSequence}`;
     };
 
-    for await (const event of stream) {
-      signal.throwIfAborted();
-      resetIdleTimer();
-      if (!Array.isArray(event)) continue;
+    // 循环处理 Agent 流：每遇到 ask_user 中断就暂停，等待前端 resume 后继续。
+    let streamInput: Record<string, unknown> = {
+      messages,
+      ...(prepared.agentRuntime.skillFiles
+        ? { files: prepared.agentRuntime.skillFiles }
+        : {}),
+    };
 
-      if (event[0] === 'tools') {
-        const payload = event[1];
-        if (!payload || typeof payload !== 'object') continue;
+    for (;;) {
+      const stream = await prepared.agentRuntime.agent.stream(streamInput, {
+        configurable: { thread_id: threadId },
+        streamMode: ['messages', 'tools', 'values'],
+        signal,
+        callbacks: [livenessCallback],
+      });
+      let interruptRequest: AskUserRequest | null = null;
+      const seenTodos = new Set<string>();
 
-        const toolEvent = payload as {
-          event?: unknown;
-          toolCallId?: unknown;
-          name?: unknown;
-          input?: unknown;
-          output?: unknown;
-          error?: unknown;
-        };
-        if (typeof toolEvent.event !== 'string') continue;
-        if (typeof toolEvent.name !== 'string' || !toolEvent.name.trim()) {
+      for await (const event of stream) {
+        signal.throwIfAborted();
+        resetIdleTimer();
+        if (!Array.isArray(event)) continue;
+
+        if (event[0] === 'values') {
+          const values = event[1] as Record<string, unknown> | undefined;
+          if (!values || typeof values !== 'object') continue;
+
+          // todo 列表快照：任务状态实时展示，避免频繁重放相同内容。
+          const todos = values.todos;
+          if (Array.isArray(todos)) {
+            const marker = createTodoMarker(todos as TodoItem[]);
+            if (!seenTodos.has(marker)) {
+              seenTodos.add(marker);
+              reasoningContent += marker;
+              yield { reasoningContent: marker };
+            }
+          }
+
+          // ask_user 中断：graph 暂停时 values 会带 __interrupt__ 结构。
+          const interrupts = (values as {
+            __interrupt__?: Array<{ value?: unknown }>;
+          }).__interrupt__;
+          const candidate = interrupts?.[0]?.value;
+          if (
+            candidate &&
+            typeof candidate === 'object' &&
+            (candidate as Record<string, unknown>).kind === 'ask_user'
+          ) {
+            interruptRequest = candidate as AskUserRequest;
+          }
           continue;
         }
 
-        const name = toolEvent.name.trim();
-        // SDK-internal callbacks without a tool identity are not user actions.
-        if (name === 'unknown') continue;
-        const providedCallId =
-          typeof toolEvent.toolCallId === 'string' && toolEvent.toolCallId
-            ? toolEvent.toolCallId
-            : undefined;
-        let trace: ToolTraceEvent | undefined;
+        if (event[0] === 'tools') {
+          const payload = event[1];
+          if (!payload || typeof payload !== 'object') continue;
 
-        if (toolEvent.event === 'on_tool_start') {
-          const callId = providedCallId ?? `tool-${++toolSequence}`;
-          rememberToolCall(name, callId);
-          trace = {
-            type: 'tool',
-            callId,
-            name,
-            status: 'running',
-            inputSummary: summarizeToolInput(toolEvent.input, name),
+          const toolEvent = payload as {
+            event?: unknown;
+            toolCallId?: unknown;
+            name?: unknown;
+            input?: unknown;
+            output?: unknown;
+            error?: unknown;
           };
-        } else if (toolEvent.event === 'on_tool_end') {
-          const recoverableError = summarizeRecoverableToolError(
-            toolEvent.output,
+          if (typeof toolEvent.event !== 'string') continue;
+          if (typeof toolEvent.name !== 'string' || !toolEvent.name.trim()) {
+            continue;
+          }
+
+          const name = toolEvent.name.trim();
+          // SDK-internal callbacks without a tool identity are not user actions.
+          if (name === 'unknown') continue;
+          const providedCallId =
+            typeof toolEvent.toolCallId === 'string' && toolEvent.toolCallId
+              ? toolEvent.toolCallId
+              : undefined;
+          let trace: ToolTraceEvent | undefined;
+
+          if (toolEvent.event === 'on_tool_start') {
+            const callId = providedCallId ?? `tool-${++toolSequence}`;
+            rememberToolCall(name, callId);
+            trace = {
+              type: 'tool',
+              callId,
+              name,
+              status: 'running',
+              inputSummary: summarizeToolInput(toolEvent.input, name),
+            };
+          } else if (toolEvent.event === 'on_tool_end') {
+            const recoverableError = summarizeRecoverableToolError(
+              toolEvent.output,
+            );
+            trace = {
+              type: 'tool',
+              callId: resolveToolCall(name, providedCallId),
+              name,
+              status: recoverableError ? 'error' : 'success',
+              outputSummary:
+                recoverableError ?? summarizeToolOutput(toolEvent.output),
+            };
+          } else if (toolEvent.event === 'on_tool_error') {
+            trace = {
+              type: 'tool',
+              callId: resolveToolCall(name, providedCallId),
+              name,
+              status: 'error',
+              outputSummary:
+                toolEvent.error instanceof Error
+                  ? toolEvent.error.message.slice(0, TRACE_SUMMARY_MAX_LENGTH)
+                  : compactTraceText(toolEvent.error) ?? '调用失败',
+            };
+          }
+
+          if (trace) {
+            const marker = createToolTraceMarker(trace);
+            reasoningContent += marker;
+            yield { reasoningContent: marker };
+          }
+          continue;
+        }
+
+        if (event[0] !== 'messages') continue;
+
+        const payload = event[1];
+        if (!Array.isArray(payload)) continue;
+
+        const message = payload[0];
+        if (
+          !message ||
+          typeof message !== 'object' ||
+          !('getType' in message) ||
+          typeof message.getType !== 'function' ||
+          message.getType() !== 'ai' ||
+          !('content' in message)
+        ) {
+          continue;
+        }
+
+        const chunk = extractContent(message.content);
+        if (chunk.content) content += chunk.content;
+        if (chunk.reasoningContent) reasoningContent += chunk.reasoningContent;
+
+        if (chunk.content) {
+          const durationMarker = finishReasoning();
+          if (durationMarker) yield { reasoningContent: durationMarker };
+        }
+        if (chunk.content || chunk.reasoningContent) yield chunk;
+      }
+
+      // 兜底：values 未带 __interrupt__ 时从 checkpoint 查询暂停状态。
+      if (!interruptRequest) {
+        try {
+          const state = (await prepared.agentRuntime.agent.getState({
+            configurable: { thread_id: threadId },
+          })) as unknown as {
+            tasks?: Array<{ interrupts?: Array<{ value?: unknown }> }>;
+          };
+          const paused = state.tasks?.find(
+            (task) => (task.interrupts?.length ?? 0) > 0,
           );
-          trace = {
-            type: 'tool',
-            callId: resolveToolCall(name, providedCallId),
-            name,
-            status: recoverableError ? 'error' : 'success',
-            outputSummary:
-              recoverableError ?? summarizeToolOutput(toolEvent.output),
-          };
-        } else if (toolEvent.event === 'on_tool_error') {
-          trace = {
-            type: 'tool',
-            callId: resolveToolCall(name, providedCallId),
-            name,
-            status: 'error',
-            outputSummary:
-              toolEvent.error instanceof Error
-                ? toolEvent.error.message.slice(0, TRACE_SUMMARY_MAX_LENGTH)
-                : compactTraceText(toolEvent.error) ?? '调用失败',
-          };
+          const candidate = paused?.interrupts?.[0]?.value;
+          if (
+            candidate &&
+            typeof candidate === 'object' &&
+            (candidate as Record<string, unknown>).kind === 'ask_user'
+          ) {
+            interruptRequest = candidate as AskUserRequest;
+          }
+        } catch {
+          // getState 失败不阻塞主流程。
         }
+      }
 
-        if (trace) {
-          const marker = createToolTraceMarker(trace);
-          reasoningContent += marker;
-          yield { reasoningContent: marker };
+      if (!interruptRequest) break;
+
+      // 有 ask_user 中断：把弹窗请求发给前端并等待 resume。
+      const askMarker = createAskUserMarker(threadId, interruptRequest);
+      reasoningContent += askMarker;
+      yield { reasoningContent: askMarker };
+
+      const answer = await new Promise<AskUserAnswer>((resolve, reject) => {
+        const onAbort = () => {
+          this.pendingResumes.delete(threadId);
+          reject(new Error('客户端已断开连接，弹窗等待被取消'));
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
         }
-        continue;
-      }
-
-      if (event[0] !== 'messages') continue;
-
-      const payload = event[1];
-      if (!Array.isArray(payload)) continue;
-
-      const message = payload[0];
-      if (
-        !message ||
-        typeof message !== 'object' ||
-        !('getType' in message) ||
-        typeof message.getType !== 'function' ||
-        message.getType() !== 'ai' ||
-        !('content' in message)
-      ) {
-        continue;
-      }
-
-      const chunk = extractContent(message.content);
-      if (chunk.content) content += chunk.content;
-      if (chunk.reasoningContent) reasoningContent += chunk.reasoningContent;
-
-      if (chunk.content) {
-        const durationMarker = finishReasoning();
-        if (durationMarker) yield { reasoningContent: durationMarker };
-      }
-      if (chunk.content || chunk.reasoningContent) yield chunk;
+        signal.addEventListener('abort', onAbort, { once: true });
+        this.pendingResumes.set(threadId, {
+          resolve: (value) => {
+            signal.removeEventListener('abort', onAbort);
+            resolve(value);
+          },
+          reject: (error) => {
+            signal.removeEventListener('abort', onAbort);
+            reject(error);
+          },
+        });
+      });
+      streamInput = resumeAskUserCommand(answer) as unknown as Record<
+        string,
+        unknown
+      >;
     }
 
     if (!reasoningFinished) {

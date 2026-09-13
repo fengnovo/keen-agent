@@ -5,10 +5,15 @@ import React from 'react';
 import {
   extractReasoningTraceMarkers,
   isReasoningStreamDone,
+  parseReasoningTrace,
   reconcileReasoningTrace,
+  type ReasoningAskUserStep,
+  type TodoItem,
 } from '../_utils/reasoning-trace';
+import { AskUserModal } from './AskUserModal';
 import { MarkdownContent } from './MarkdownContent';
 import { ThinkComponent } from './ThinkComponent';
+import { TodoList } from './TodoList';
 
 interface AssistantMessageContentProps {
   content: string;
@@ -76,8 +81,25 @@ export const AssistantMessageContent: React.FC<
     [content, status],
   );
 
+  const { todos, askUser } = React.useMemo(() => {
+    if (parts.reasoning === undefined) return { todos: undefined, askUser: undefined };
+    const trace = parseReasoningTrace(parts.reasoning);
+    const latestTodo = [...trace.steps]
+      .reverse()
+      .find((step): step is { kind: 'todo'; key: string; todos: TodoItem[] } => step.kind === 'todo');
+    const latestAsk = [...trace.steps]
+      .reverse()
+      .find((step): step is ReasoningAskUserStep => step.kind === 'ask_user');
+    return {
+      todos: latestTodo?.todos,
+      askUser: latestAsk,
+    };
+  }, [parts.reasoning]);
+
   return (
     <div className='assistant-message-content'>
+      {todos && todos.length > 0 ? <TodoList todos={todos} /> : null}
+
       {parts.reasoning !== undefined ? (
         <ThinkComponent
           content={parts.reasoning}
@@ -96,6 +118,10 @@ export const AssistantMessageContent: React.FC<
             variant='answer'
           />
         </div>
+      ) : null}
+
+      {askUser ? (
+        <AskUserModal runId={askUser.runId} request={askUser.request} />
       ) : null}
     </div>
   );
